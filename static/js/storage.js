@@ -23,7 +23,9 @@ export const KEYS = {
   MCP_ACTIVE: 'odysseus-mcp-active',
   SECTION_ORDER: 'sidebar-section-order',
   ADMIN_LAST_TAB: 'admin-last-tab',
-  DENSITY: 'odysseus-density'
+  DENSITY: 'odysseus-density',
+  COMPANION_PROFILE: 'odysseus-companion-profile',
+  COMPANION_LOG: 'odysseus-companion-log'
 };
 
 /**

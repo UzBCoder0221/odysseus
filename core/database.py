@@ -678,6 +678,67 @@ class Memory(Base):
         Index('ix_memories_session', 'session_id', 'timestamp'),  # Composite for session-based queries
     )
 
+class CompanionProfile(TimestampMixin, Base):
+    """User profile for the companion/wellbeing system."""
+    __tablename__ = "companion_profiles"
+
+    id = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=True, index=True)
+    display_name = Column(String, default="")
+    timezone = Column(String, default="UTC")
+    conditions = Column(Text, default="[]")
+    energy_pattern = Column(String, default="Variable")
+    ideal_sleep_hours = Column(Integer, default=8)
+
+
+class CompanionCheckin(TimestampMixin, Base):
+    """Daily check-in entry for the companion system."""
+    __tablename__ = "companion_checkins"
+
+    id = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=True, index=True)
+    date = Column(String, nullable=False, index=True)
+    mood = Column(Integer, nullable=False)
+    energy = Column(Integer, nullable=False)
+    sleep_hours = Column(Integer, nullable=False)
+    text = Column(Text, default="")
+    message = Column(Text, default="")
+    briefing = Column(Text, nullable=True)
+
+    # Stage 3 — Mid-day micro check-in
+    mid_mood = Column(Integer, nullable=True)
+    mid_energy = Column(Integer, nullable=True)
+    mid_feeling = Column(String, nullable=True)
+
+    # Stage 3 — End-of-day reflection
+    eod_done = Column(Text, nullable=True)
+    eod_blocked = Column(Text, nullable=True)
+    eod_tomorrow = Column(Text, nullable=True)
+    eod_rating = Column(Integer, nullable=True)
+    eod_message = Column(Text, nullable=True)
+
+
+class CompanionTask(TimestampMixin, Base):
+    """Task item for the daily planner."""
+    __tablename__ = "companion_tasks"
+
+    id = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=True, index=True)
+    title = Column(String, nullable=False)
+    estimated_minutes = Column(Integer, nullable=True)
+    priority = Column(String, default="Medium")
+    status = Column(String, default="todo")
+    sort_order = Column(Integer, default=0)
+    date = Column(String, nullable=False, index=True)
+    carried_over = Column(Boolean, default=False)
+    sub_steps = Column(Text, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index('ix_companion_tasks_date_owner', 'date', 'owner'),
+    )
+
+
 def _migrate_add_last_message_at_column():
     """Add last_message_at to sessions + backfill from the latest message
     timestamp per session (fallback to last_accessed / created_at when a
@@ -1723,6 +1784,42 @@ def _migrate_seed_email_account():
 # Any future migrations or schema changes that temporarily violate foreign-key
 # constraints will fail. To perform such operations, foreign_keys must be
 # temporarily disabled around the migration workflow.
+def _migrate_add_companion_stage3_columns():
+    """Add Stage 3 companion columns (mid-day, EOD) to companion_checkins."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(companion_checkins)")
+        columns = [row[1] for row in cursor.fetchall()]
+        stage3_cols = [
+            ("mid_mood", "INTEGER"),
+            ("mid_energy", "INTEGER"),
+            ("mid_feeling", "TEXT"),
+            ("eod_done", "TEXT"),
+            ("eod_blocked", "TEXT"),
+            ("eod_tomorrow", "TEXT"),
+            ("eod_rating", "INTEGER"),
+            ("eod_message", "TEXT"),
+        ]
+        for col_name, col_type in stage3_cols:
+            if col_name not in columns:
+                conn.execute(f"ALTER TABLE companion_checkins ADD COLUMN {col_name} {col_type}")
+            if col_name not in columns:
+                logging.getLogger(__name__).info(f"Migrated: added '{col_name}' to companion_checkins")
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"companion stage 3 migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def init_db():
     """
     Initialize the database by creating all tables.
@@ -1730,6 +1827,7 @@ def init_db():
     """
     _migrate_model_endpoints()
     Base.metadata.create_all(bind=engine)
+    _migrate_add_companion_stage3_columns()
     _migrate_add_hidden_models_column()
     _migrate_add_cached_models_column()
     _migrate_add_pinned_models_column()

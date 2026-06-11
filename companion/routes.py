@@ -17,6 +17,10 @@ on a GET would be unsafe (Lax cookies ride top-level GET navigations), so GET
 """
 
 import html
+import re
+
+import json
+import uuid
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
@@ -64,6 +68,61 @@ def mint_pairing_token(owner: str, invalidate=None) -> tuple[str, str]:
     if callable(invalidate):
         invalidate()
     return token_id, raw_token
+
+
+def _resolve_companion_endpoint(owner=None):
+    """Resolve (url, model, headers) for companion AI calls.
+
+    Reads default_endpoint_id from settings, queries the ModelEndpoint,
+    and always picks the first chat-capable model from its cached_models
+    list — ignoring any embedding/TTS/utility model that may be stored in
+    default_model.
+    """
+    import json as _json
+    try:
+        from src.settings import load_settings
+        settings = load_settings()
+    except Exception:
+        settings = {}
+    ep_id = settings.get("default_endpoint_id", "")
+    if not ep_id:
+        return None, None, None
+
+    from core.database import SessionLocal, ModelEndpoint
+    from src.endpoint_resolver import resolve_endpoint_runtime, build_chat_url, build_headers, _first_chat_model
+
+    db = SessionLocal()
+    try:
+        q = db.query(ModelEndpoint).filter(
+            ModelEndpoint.id == ep_id,
+            ModelEndpoint.is_enabled == True
+        )
+        if owner:
+            from src.auth_helpers import owner_filter
+            q = owner_filter(q, ModelEndpoint, owner)
+        ep = q.first()
+        if not ep:
+            return None, None, None
+
+        base, api_key = resolve_endpoint_runtime(ep, owner=owner)
+        url = build_chat_url(base)
+        headers = build_headers(api_key, base)
+
+        models = _json.loads(ep.cached_models) if ep.cached_models else []
+        _NON_CHAT_EXTRA = ("embed",)
+        chat_models = [
+            m for m in models
+            if not any(p in str(m).lower() for p in _NON_CHAT_EXTRA)
+        ]
+        model = _first_chat_model(chat_models) or _first_chat_model(models) or ""
+        if not model:
+            return None, None, None
+
+        return url, model, headers
+    except Exception:
+        return None, None, None
+    finally:
+        db.close()
 
 
 def setup_companion_routes() -> APIRouter:
@@ -232,5 +291,554 @@ def setup_companion_routes() -> APIRouter:
   device must be on the same network, and the server must bind to your LAN.</p>
 </div></body></html>"""
         return HTMLResponse(page)
+
+    @router.post("/message")
+    async def companion_message(request: Request):
+        """Generate a short AI companion message based on check-in data.
+        
+        Optionally accepts:
+          - mood_delta: int (-10..10) to adjust tone
+          - messages: list of {role, content} for conversation history
+        
+        Uses the user's configured default chat model. Returns a generic
+        fallback if no model is configured or the LLM call fails.
+        """
+        body = await request.json()
+        mood = body.get("mood", 5)
+        energy = body.get("energy", 5)
+        sleep_hours = body.get("sleep", 0)
+        conditions = body.get("conditions", [])
+        time_of_day = body.get("time_of_day", "")
+        mood_delta = body.get("mood_delta")
+        messages = body.get("messages")
+
+        url, model, headers = _resolve_companion_endpoint(owner=token_owner(request))
+        if not url or not model:
+            return {"message": "I'm here when you need me."}
+
+        if messages:
+            # Conversation mode — preserve existing messages, just respond
+            system_prompt = (
+                "You are a calm, supportive companion. Keep your responses warm, "
+                "brief (1-3 sentences), and conversational. Never be overly "
+                "cheerful. Feel like a quiet, understanding presence."
+            )
+            conversation = [{"role": "system", "content": system_prompt}]
+            for msg in messages:
+                conversation.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
+            try:
+                from src.llm_core import llm_call
+                response = llm_call(url, model, conversation, temperature=0.7, max_tokens=120, headers=headers)
+                return {"message": response.strip()}
+            except Exception as e:
+                import logging
+                logging.getLogger("companion").error(f"/message chat call failed: {e}", exc_info=True)
+                return {"message": "I'm here."}
+
+        tone_modifier = ""
+        if mood_delta is not None:
+            if mood_delta <= -3:
+                tone_modifier = " The user's mood dropped significantly. Be extra gentle and supportive."
+            elif mood_delta >= 3:
+                tone_modifier = " The user's mood improved noticeably. Be warm and affirming."
+
+        system_prompt = (
+            "You are a calm, supportive companion. Generate ONE short sentence "
+            "(max 20 words) that acknowledges the user's current state. Be warm "
+            "but not overly cheerful. Never give advice or ask questions. "
+            "Feel like a quiet presence, not a coach." + tone_modifier
+        )
+
+        user_prompt = (
+            f"User state: mood {mood}/10, energy {energy}/10, slept {sleep_hours}h. "
+            f"Conditions: {conditions}. Time of day: {time_of_day}."
+        )
+
+        try:
+            from src.llm_core import llm_call
+            response = llm_call(url, model, [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ], temperature=0.7, max_tokens=60, headers=headers)
+            return {"message": response.strip()}
+        except Exception as e:
+            import logging
+            logging.getLogger("companion").error(f"/message AI call failed: {e}", exc_info=True)
+            return {"error": "AI call failed", "detail": str(e)}
+
+    @router.get("/profile")
+    def get_profile(request: Request):
+        """Get the companion profile for the current user."""
+        from core.database import SessionLocal, CompanionProfile
+
+        owner = token_owner(request)
+        if not owner:
+            return {}
+        db = SessionLocal()
+        try:
+            profile = db.query(CompanionProfile).filter(
+                CompanionProfile.owner == owner
+            ).first()
+            if not profile:
+                return {}
+            return {
+                "display_name": profile.display_name or "",
+                "timezone": profile.timezone or "UTC",
+                "conditions": json.loads(profile.conditions or "[]"),
+                "energy_pattern": profile.energy_pattern or "Variable",
+                "ideal_sleep_hours": profile.ideal_sleep_hours or 8,
+            }
+        finally:
+            db.close()
+
+    @router.post("/profile")
+    async def upsert_profile(request: Request):
+        """Create or update the companion profile."""
+        from core.database import SessionLocal, CompanionProfile
+
+        body = await request.json()
+        owner = token_owner(request)
+        if not owner:
+            return {"ok": False}
+        db = SessionLocal()
+        try:
+            profile = db.query(CompanionProfile).filter(
+                CompanionProfile.owner == owner
+            ).first()
+            if not profile:
+                profile = CompanionProfile(
+                    id=str(uuid.uuid4()),
+                    owner=owner,
+                )
+                db.add(profile)
+            profile.display_name = body.get("display_name", "")
+            profile.timezone = body.get("timezone", "UTC")
+            profile.conditions = json.dumps(body.get("conditions", []))
+            profile.energy_pattern = body.get("energy_pattern", "Variable")
+            profile.ideal_sleep_hours = body.get("ideal_sleep_hours", 8)
+            db.commit()
+            return {"ok": True}
+        finally:
+            db.close()
+
+    @router.get("/checkins")
+    def get_checkins(request: Request):
+        """Get all check-ins for the current user."""
+        from core.database import SessionLocal, CompanionCheckin
+
+        owner = token_owner(request)
+        if not owner:
+            return {"entries": {}}
+        db = SessionLocal()
+        try:
+            rows = db.query(CompanionCheckin).filter(
+                CompanionCheckin.owner == owner
+            ).all()
+            entries = {}
+            for row in rows:
+                entries[row.date] = {
+                    "mood": row.mood,
+                    "energy": row.energy,
+                    "sleep": row.sleep_hours,
+                    "text": row.text or "",
+                    "message": row.message or "",
+                    "briefing": row.briefing or "",
+                    "timestamp": row.created_at.isoformat() if row.created_at else "",
+                    "mid_mood": row.mid_mood,
+                    "mid_energy": row.mid_energy,
+                    "mid_feeling": row.mid_feeling or "",
+                    "eod_done": row.eod_done or "",
+                    "eod_blocked": row.eod_blocked or "",
+                    "eod_tomorrow": row.eod_tomorrow or "",
+                    "eod_rating": row.eod_rating,
+                    "eod_message": row.eod_message or "",
+                }
+            return {"entries": entries}
+        finally:
+            db.close()
+
+    @router.post("/checkins")
+    async def upsert_checkin(request: Request):
+        """Create or update a check-in entry."""
+        from core.database import SessionLocal, CompanionCheckin
+
+        body = await request.json()
+        owner = token_owner(request)
+        if not owner:
+            return {"ok": False}
+        date = body.get("date", "")
+        if not date:
+            return {"ok": False}
+        db = SessionLocal()
+        try:
+            entry = db.query(CompanionCheckin).filter(
+                CompanionCheckin.owner == owner,
+                CompanionCheckin.date == date
+            ).first()
+            if not entry:
+                entry = CompanionCheckin(
+                    id=str(uuid.uuid4()),
+                    owner=owner,
+                    date=date,
+                )
+                db.add(entry)
+            entry.mood = body.get("mood", 5)
+            entry.energy = body.get("energy", 5)
+            entry.sleep_hours = body.get("sleep", 0)
+            entry.text = body.get("text", "")
+            entry.message = body.get("message", "")
+            briefing = body.get("briefing")
+            if briefing is not None:
+                entry.briefing = briefing
+            db.commit()
+            return {"ok": True}
+        finally:
+            db.close()
+
+    @router.patch("/checkins/today")
+    async def patch_today_checkin(request: Request):
+        """Partial-update today's check-in. Accepts any subset of:
+        mid_mood, mid_energy, mid_feeling, eod_done, eod_blocked,
+        eod_tomorrow, eod_rating, eod_message.
+        Creates today's row if it does not yet exist.
+        """
+        from core.database import SessionLocal, CompanionCheckin
+        from datetime import date as _date
+
+        body = await request.json()
+        owner = token_owner(request)
+        if not owner:
+            return {"ok": False}
+        today_str = _date.today().isoformat()
+        db = SessionLocal()
+        try:
+            entry = db.query(CompanionCheckin).filter(
+                CompanionCheckin.owner == owner,
+                CompanionCheckin.date == today_str
+            ).first()
+            if not entry:
+                entry = CompanionCheckin(
+                    id=str(uuid.uuid4()),
+                    owner=owner,
+                    date=today_str,
+                    mood=5,
+                    energy=5,
+                    sleep_hours=0,
+                )
+                db.add(entry)
+            for field in ("mid_mood", "mid_energy", "mid_feeling",
+                         "eod_done", "eod_blocked", "eod_tomorrow",
+                         "eod_rating", "eod_message"):
+                if field in body:
+                    setattr(entry, field, body[field])
+            db.commit()
+            return {
+                "ok": True,
+                "entry": {
+                    "mid_mood": entry.mid_mood,
+                    "mid_energy": entry.mid_energy,
+                    "mid_feeling": entry.mid_feeling or "",
+                    "eod_done": entry.eod_done or "",
+                    "eod_blocked": entry.eod_blocked or "",
+                    "eod_tomorrow": entry.eod_tomorrow or "",
+                    "eod_rating": entry.eod_rating,
+                    "eod_message": entry.eod_message or "",
+                }
+            }
+        finally:
+            db.close()
+
+    @router.get("/tasks")
+    def get_tasks(request: Request):
+        """Get tasks for the current user."""
+        from core.database import SessionLocal, CompanionTask
+
+        owner = token_owner(request)
+        if not owner:
+            return {"tasks": []}
+        date = request.query_params.get("date", "")
+        db = SessionLocal()
+        try:
+            q = db.query(CompanionTask).filter(
+                CompanionTask.owner == owner
+            )
+            if date:
+                q = q.filter(CompanionTask.date == date)
+            rows = q.order_by(CompanionTask.sort_order).all()
+            tasks = []
+            for row in rows:
+                sub = []
+                if row.sub_steps:
+                    try:
+                        sub = json.loads(row.sub_steps)
+                    except Exception:
+                        sub = []
+                tasks.append({
+                    "id": row.id,
+                    "title": row.title,
+                    "estimated_minutes": row.estimated_minutes,
+                    "priority": row.priority,
+                    "status": row.status,
+                    "sort_order": row.sort_order,
+                    "date": row.date,
+                    "carried_over": row.carried_over or False,
+                    "sub_steps": sub,
+                    "created_at": row.created_at.isoformat() if row.created_at else "",
+                    "completed_at": row.completed_at.isoformat() if row.completed_at else "",
+                })
+            return {"tasks": tasks}
+        finally:
+            db.close()
+
+    @router.post("/tasks")
+    async def create_task(request: Request):
+        """Create a new task."""
+        from core.database import SessionLocal, CompanionTask
+
+        body = await request.json()
+        owner = token_owner(request)
+        if not owner:
+            return {"ok": False}
+        db = SessionLocal()
+        try:
+            max_order = db.query(CompanionTask.sort_order).filter(
+                CompanionTask.owner == owner,
+                CompanionTask.date == body.get("date", "")
+            ).order_by(CompanionTask.sort_order.desc()).first()
+            sort_order = (max_order[0] or 0) + 1 if max_order else 0
+            task = CompanionTask(
+                id=str(uuid.uuid4()),
+                owner=owner,
+                title=body.get("title", "")[:80],
+                estimated_minutes=body.get("estimated_minutes"),
+                priority=body.get("priority", "Medium"),
+                status="todo",
+                sort_order=sort_order,
+                date=body.get("date", ""),
+                carried_over=body.get("carried_over", False),
+                sub_steps=json.dumps(body.get("sub_steps", [])),
+            )
+            db.add(task)
+            db.commit()
+            return {"ok": True, "id": task.id}
+        finally:
+            db.close()
+
+    @router.patch("/tasks/{task_id}")
+    async def update_task(task_id: str, request: Request):
+        """Update a task (status, title, sub_steps, etc.)."""
+        from core.database import SessionLocal, CompanionTask
+        from datetime import datetime, timezone
+
+        body = await request.json()
+        owner = token_owner(request)
+        if not owner:
+            return {"ok": False}
+        db = SessionLocal()
+        try:
+            task = db.query(CompanionTask).filter(
+                CompanionTask.id == task_id,
+                CompanionTask.owner == owner
+            ).first()
+            if not task:
+                return {"ok": False, "error": "not found"}
+            if "title" in body:
+                task.title = body["title"][:80]
+            if "estimated_minutes" in body:
+                task.estimated_minutes = body["estimated_minutes"]
+            if "priority" in body:
+                task.priority = body["priority"]
+            if "status" in body:
+                task.status = body["status"]
+                if body["status"] == "done" and not task.completed_at:
+                    task.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                elif body["status"] != "done":
+                    task.completed_at = None
+            if "sort_order" in body:
+                task.sort_order = body["sort_order"]
+            if "carried_over" in body:
+                task.carried_over = body["carried_over"]
+            if "sub_steps" in body:
+                task.sub_steps = json.dumps(body["sub_steps"])
+            db.commit()
+            return {"ok": True}
+        finally:
+            db.close()
+
+    @router.post("/briefing")
+    async def generate_briefing(request: Request):
+        """Generate an AI morning briefing based on check-in data."""
+        body = await request.json()
+        mood = body.get("mood", 5)
+        energy = body.get("energy", 5)
+        sleep_hours = body.get("sleep", 0)
+        conditions = body.get("conditions", [])
+        energy_pattern = body.get("energy_pattern", "Variable")
+        pending_tasks = body.get("pending_tasks", "")
+        time_of_day = body.get("time_of_day", "")
+
+        url, model, headers = _resolve_companion_endpoint(owner=token_owner(request))
+        if not url or not model:
+            return {"briefing": "Good morning. Take a moment to breathe and set your intention for the day."}
+
+        condition_note = ""
+        if conditions:
+            if "adhd" in conditions:
+                condition_note += " The user has ADHD. Suggest max 3 concrete priorities. "
+            if any(c in ("depression", "anxiety") for c in conditions):
+                condition_note += " Be gentle and encourage small wins. "
+            if "chronic_fatigue" in conditions:
+                condition_note += " The user has chronic fatigue — keep it light. "
+
+        energy_note = ""
+        if energy < 4:
+            energy_note = " Energy is very low. Suggest a light day, one thing at a time."
+        elif energy > 7:
+            energy_note = " Energy is high. Encourage tackling harder tasks."
+
+        system_prompt = (
+            "You are a warm, supportive morning companion. Generate a SHORT briefing "
+            "(4-6 sentences max). Acknowledge how the user is feeling. "
+            "End with one grounding sentence."
+        )
+
+        user_prompt = (
+            f"Time: {time_of_day}. Mood: {mood}/10. Energy: {energy}/10. "
+            f"Slept {sleep_hours}h. Pattern: {energy_pattern}.{condition_note}{energy_note}"
+        )
+        if pending_tasks:
+            user_prompt += f" Pending tasks from yesterday: {pending_tasks}"
+
+        try:
+            from src.llm_core import llm_call
+            response = llm_call(url, model, [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ], temperature=0.7, max_tokens=200, headers=headers)
+            return {"briefing": response.strip()}
+        except Exception as e:
+            import logging
+            logging.getLogger("companion").error(f"/briefing AI call failed: {e}", exc_info=True)
+            return {"error": "AI call failed", "detail": str(e)}
+
+    @router.delete("/tasks/{task_id}")
+    async def delete_task(task_id: str, request: Request):
+        """Delete a task."""
+        from core.database import SessionLocal, CompanionTask
+
+        owner = token_owner(request)
+        if not owner:
+            return {"ok": False}
+        db = SessionLocal()
+        try:
+            task = db.query(CompanionTask).filter(
+                CompanionTask.id == task_id,
+                CompanionTask.owner == owner
+            ).first()
+            if not task:
+                return {"ok": False, "error": "not found"}
+            db.delete(task)
+            db.commit()
+            return {"ok": True}
+        finally:
+            db.close()
+
+    @router.post("/tasks/prioritize")
+    async def prioritize_tasks(request: Request):
+        """AI-powered task prioritization. Returns a JSON array with suggested
+        task order and one-line reasoning per task."""
+        body = await request.json()
+        tasks_in = body.get("tasks", [])
+        mood = body.get("mood", 5)
+        energy = body.get("energy", 5)
+        conditions = body.get("conditions", [])
+
+        url, model, headers = _resolve_companion_endpoint(owner=token_owner(request))
+        if not url or not model or not tasks_in:
+            return {"suggestions": []}
+
+        tasks_json = "\n".join(
+            f'- id={t.get("id","")} title="{t.get("title","")}" [priority: {t.get("priority","Medium")}]'
+            + (f" ({t.get('estimated_minutes','')}m)" if t.get("estimated_minutes") else "")
+            for t in tasks_in
+        )
+        system_prompt = (
+            "You are a task prioritizer. Return ONLY a JSON array. "
+            "Each item must have: "
+            '{"id": string, "suggested_order": number, "reason": string}. '
+            "The id field must be the EXACT id value sent in the task listing below — echo it back unchanged. "
+            "Order tasks by what the user should do first given their current state. "
+            "Do not return any other text, no markdown, no explanation outside the JSON."
+        )
+        user_prompt = (
+            f"User state — mood: {mood}/10, energy: {energy}/10, "
+            f"conditions: {conditions}.\nTasks:\n{tasks_json}"
+        )
+
+        try:
+            from src.llm_core import llm_call
+            response = llm_call(url, model, [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ], temperature=0.3, max_tokens=500, headers=headers)
+        except Exception as e:
+            import logging
+            logging.getLogger("companion").error(f"/tasks/prioritize AI call failed: {e}", exc_info=True)
+            return {"error": "AI call failed", "detail": str(e)}
+
+        try:
+            import json as _json
+            suggestions = _json.loads(response.strip())
+            if not isinstance(suggestions, list):
+                return {"suggestions": []}
+            return {"suggestions": suggestions}
+        except Exception as e:
+            return {"error": "AI response parse failed", "detail": str(e)}
+
+    @router.post("/tasks/breakdown")
+    async def breakdown_task(request: Request):
+        """Break a task title into actionable steps using AI."""
+        body = await request.json()
+        title = body.get("title", "")
+
+        if not title:
+            return {"error": "Missing title"}
+
+        url, model, headers = _resolve_companion_endpoint(owner=token_owner(request))
+        if not url or not model:
+            return {"error": "No model configured"}
+
+        system_prompt = (
+            "Return ONLY a single JSON array of strings. Each string is one concrete action "
+            "step, max 10 words. 2 to 4 steps total. "
+            "No markdown, no keys, no explanation outside the array. "
+            "No markdown fences. No text before or after the array. No newlines between items."
+        )
+        user_prompt = f"Task: {title}"
+
+        try:
+            from src.llm_core import llm_call
+            response = llm_call(url, model, [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ], temperature=0.3, max_tokens=300, headers=headers)
+        except Exception as e:
+            import logging
+            logging.getLogger("companion").error(f"/tasks/breakdown AI call failed: {e}", exc_info=True)
+            return {"error": "AI call failed", "detail": str(e)}
+
+        try:
+            import json as _json
+            raw = response.strip()
+            text = re.sub(r"```[a-z]*\n?", "", raw).strip()
+            match = re.search(r'\[.*?\]', text, re.DOTALL)
+            if not match:
+                return {"error": "AI response parse failed", "detail": "No JSON array found"}
+            steps = _json.loads(match.group())
+            if not isinstance(steps, list):
+                return {"steps": []}
+            return {"steps": steps}
+        except Exception as e:
+            return {"error": "AI response parse failed", "detail": str(e)}
 
     return router
