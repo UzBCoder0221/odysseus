@@ -159,6 +159,7 @@ function renderBar() {
 
   el('companion-open-btn')?.addEventListener('click', openPanel);
   el('companion-briefing-btn')?.addEventListener('click', () => { openPanel(); switchTab('today'); });
+  renderPanelOpener();
 }
 
 /* ── Side panel ── */
@@ -177,6 +178,7 @@ function closePanel() {
   const overlay = el('companion-overlay');
   if (panel) panel.classList.add('hidden');
   if (overlay) overlay.classList.add('hidden');
+  el('companion-chat-card')?.classList.remove('expanded');
 }
 
 function switchTab(tab) {
@@ -323,6 +325,7 @@ function updateHistoryTab() {
   container.innerHTML = html;
   updateHistoryDetail();
   updateMoodGrid();
+  updatePatternsCard();
 }
 
 function renderHistoryRow(date, entry) {
@@ -407,6 +410,41 @@ function updateMoodGrid() {
   html += '</div>';
 
   grid.innerHTML = html;
+}
+
+/* ── Patterns card ── */
+async function updatePatternsCard() {
+  const container = el('companion-patterns-content');
+  if (!container) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/companion/patterns`);
+    const data = await res.json();
+    if (data.insufficient_data) {
+      container.innerHTML = '<div class="patterns-insufficient">Check in for a few more days and patterns will start showing up here.</div>';
+      return;
+    }
+    const lines = [];
+    if (data.mood_trend) {
+      const trendWord = { declining: 'trending down', stable: 'stable', improving: 'improving' }[data.mood_trend] || data.mood_trend;
+      lines.push(`Your mood has been ${trendWord} compared to last week.`);
+    }
+    if (data.checkin_streak_days && data.checkin_streak_days >= 3) {
+      lines.push(`You've checked in ${data.checkin_streak_days} days in a row.`);
+    }
+    if (data.sleep_trend) {
+      const sleepWord = { declining: 'trending down', stable: 'stable', improving: 'improving' }[data.sleep_trend] || data.sleep_trend;
+      lines.push(`Sleep has been ${sleepWord}.`);
+    }
+    if (data.common_carry_over_tasks && data.common_carry_over_tasks.length > 0) {
+      lines.push(`Tasks you've carried over a few times: ${data.common_carry_over_tasks.join(', ')}.`);
+    }
+    if (data.low_mood_days_of_week && data.low_mood_days_of_week.length > 0) {
+      lines.push(`Low mood tends to happen on: ${data.low_mood_days_of_week.join(', ')}.`);
+    }
+    container.innerHTML = lines.map(l => `<div class="patterns-line">${esc(l)}</div>`).join('');
+  } catch (_) {
+    container.innerHTML = '<div class="patterns-insufficient">Could not load patterns.</div>';
+  }
 }
 
 /* ── Today tab (briefing + tasks + mid-day + EOD + chat) ── */
@@ -630,26 +668,52 @@ function renderChatLog() {
   log.scrollTop = log.scrollHeight;
 }
 
-async function sendChatMessage() {
+/* ── Pending state for Just talk chat ── */
+let _chatPending = false;
+let _lastUserMessage = '';
+
+async function sendChatMessage(retryMsg) {
   const input = el('companion-chat-input');
-  const text = (input?.value || '').trim();
-  if (!text) return;
-  if (input) input.value = '';
+  const text = retryMsg || (input?.value || '').trim();
+  if (!text || _chatPending) return;
+  _lastUserMessage = text;
+  if (input && !retryMsg) input.value = '';
+
+  _chatPending = true;
+  const sendBtn = el('companion-chat-send');
+  if (sendBtn) sendBtn.disabled = true;
+  if (input) input.disabled = true;
 
   const msgs = loadChatMessages();
-  msgs.push({ role: 'user', content: text });
-  saveChatMessages(msgs);
-  renderChatLog();
+  /* Only add user message if not a retry (already saved) */
+  if (!retryMsg) {
+    msgs.push({ role: 'user', content: text });
+    saveChatMessages(msgs);
+    renderChatLog();
+  }
 
-  /* Call AI */
+  /* Add typing indicator */
+  const log = el('companion-chat-log');
+  const typingEl = document.createElement('div');
+  typingEl.className = 'companion-chat-msg companion-typing';
+  typingEl.id = 'companion-typing-indicator';
+  typingEl.innerHTML = '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
+  log.appendChild(typingEl);
+  log.scrollTop = log.scrollHeight;
+
+  /* 30s timeout */
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
   const profile = loadProfile();
-  const log = loadLog();
-  const today = log[todayKey()] || {};
+  const logData = loadLog();
+  const today = logData[todayKey()] || {};
 
   try {
     const res = await fetch(`${API_BASE}/api/companion/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       body: JSON.stringify({
         messages: msgs.map(m => ({ role: m.role, content: m.content })),
         mood: today.mood || 5,
@@ -660,19 +724,40 @@ async function sendChatMessage() {
       })
     });
     const data = await res.json();
+
+    /* Remove typing indicator */
+    const ti = document.getElementById('companion-typing-indicator');
+    if (ti) ti.remove();
+
     if (data.message) {
       msgs.push({ role: 'assistant', content: data.message });
       saveChatMessages(msgs);
       renderChatLog();
-    } else if (data.error) {
+    } else {
+      /* Empty or error response — show fallback */
       msgs.push({ role: 'assistant', content: 'I\'m here.' });
       saveChatMessages(msgs);
       renderChatLog();
     }
   } catch (_) {
-    msgs.push({ role: 'assistant', content: 'I\'m here.' });
-    saveChatMessages(msgs);
-    renderChatLog();
+    /* Remove typing indicator */
+    const ti = document.getElementById('companion-typing-indicator');
+    if (ti) ti.remove();
+
+    /* Show error bubble with retry */
+    if (log) {
+      const errEl = document.createElement('div');
+      errEl.className = 'companion-chat-msg chat-msg-error';
+      errEl.innerHTML = '<span>⚠️ Something went wrong</span> <button class="chat-retry-btn" data-companion-retry>Retry</button>';
+      log.appendChild(errEl);
+      log.scrollTop = log.scrollHeight;
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    _chatPending = false;
+    if (sendBtn) sendBtn.disabled = false;
+    if (input) input.disabled = false;
+    if (input && !retryMsg) input.focus();
   }
 }
 
@@ -701,7 +786,7 @@ function getNudgeMessages(type) {
   const nudges = {
     greeting: ['Hey, just checking in. How are you feeling?'],
     midday: ['Quick check: how\'s your day going so far?', 'Mid-day pause — how are you holding up?', 'Halfway through the day — how\'s the energy?'],
-    eod: ['Evening reflection time. How was your day?', 'Day's winding down — want to reflect?', 'End-of-day pause — what went well?'],
+    eod: ['Evening reflection time. How was your day?', 'Day\'s winding down — want to reflect?', 'End-of-day pause — what went well?'],
     move: ['Time to stretch those legs. Walk a few steps?', 'Stand up, roll your shoulders, breathe.'],
     drink: ['Sip some water. Your brain will thank you.', 'Hydration check: had water recently?'],
     breathe: ['Close your eyes. Take three slow breaths.', 'Breathe in for 4, hold for 4, out for 4.'],
@@ -1139,6 +1224,28 @@ function autoCarryOverTasks() {
   console.log(`[companion] ${undone.length} task(s) carried over: ${titles}`);
 }
 
+/* ── Panel opener button (Stage 3) ── */
+function renderPanelOpener() {
+  const container = document.querySelector('.companion-bar-inner');
+  if (!container) return;
+  if (el('companion-panel-opener')) return;
+  const btn = document.createElement('button');
+  btn.id = 'companion-panel-opener';
+  btn.className = 'companion-bar-btn';
+  btn.title = 'What\'s next?';
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
+  btn.addEventListener('click', showStage3Panel);
+  container.appendChild(btn);
+}
+
+function showStage3Panel() {
+  openPanel();
+  switchTab('today');
+  /* Scroll to bottom of the panel where the Stage-3 widgets live */
+  const body = document.querySelector('.companion-panel-body');
+  if (body) setTimeout(() => body.scrollTop = body.scrollHeight, 100);
+}
+
 /* ── Init ── */
 function init() {
   carryOverTasks();
@@ -1248,8 +1355,35 @@ function init() {
   });
   renderChatLog();
 
+  /* Collapsible chat card */
+  const chatHeader = el('companion-chat-header');
+  if (chatHeader) {
+    chatHeader.addEventListener('click', e => {
+      if (e.target.closest('.companion-card-collapse-btn')) return;
+      document.getElementById('companion-chat-card')?.classList.toggle('expanded');
+    });
+  }
+  el('companion-chat-collapse')?.addEventListener('click', () => {
+    document.getElementById('companion-chat-card')?.classList.remove('expanded');
+  });
+
+  /* Collapsible patterns card */
+  const patternsHeader = el('companion-patterns-header');
+  if (patternsHeader) {
+    patternsHeader.addEventListener('click', () => {
+      document.getElementById('companion-patterns-card')?.classList.toggle('expanded');
+    });
+  }
+
   /* Nudge system */
   el('companion-nudge')?.addEventListener('click', handleNudgeClick);
+
+  /* Retry button delegation */
+  el('companion-chat-log')?.addEventListener('click', e => {
+    if (e.target.closest('[data-companion-retry]')) {
+      sendChatMessage(_lastUserMessage);
+    }
+  });
 
   /* Show nudge on load and periodically */
   setTimeout(() => showNudge(), 5000);

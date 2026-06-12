@@ -70,6 +70,141 @@ def mint_pairing_token(owner: str, invalidate=None) -> tuple[str, str]:
     return token_id, raw_token
 
 
+def detect_patterns(owner):
+    """Detect patterns from check-in and task data over the last 14-21 days.
+
+    Returns a structured dict with mood/sleep/task trends, or
+    {"insufficient_data": True} if fewer than 5 check-ins exist.
+    """
+    from core.database import SessionLocal, CompanionCheckin, CompanionTask
+    from datetime import date, timedelta
+    from collections import Counter
+
+    if not owner:
+        return {"insufficient_data": True}
+
+    db = SessionLocal()
+    try:
+        today = date.today()
+
+        # Count all check-ins for the user
+        total_checkins = db.query(CompanionCheckin).filter(
+            CompanionCheckin.owner == owner
+        ).count()
+        if total_checkins < 5:
+            return {"insufficient_data": True}
+
+        # Fetch last 21 days of check-ins
+        cutoff_21 = (today - timedelta(days=21)).isoformat()
+        rows = db.query(CompanionCheckin).filter(
+            CompanionCheckin.owner == owner,
+            CompanionCheckin.date >= cutoff_21
+        ).order_by(CompanionCheckin.date).all()
+
+        checkins_by_date = {r.date: r for r in rows}
+
+        def checkins_in_range(start_offset, end_offset):
+            start = (today - timedelta(days=start_offset)).isoformat()
+            end = (today - timedelta(days=end_offset)).isoformat()
+            return [r for d, r in sorted(checkins_by_date.items()) if start <= d <= end]
+
+        result = {}
+
+        # ── Mood ──
+        ch7 = checkins_in_range(6, 0)
+        moods_7 = [c.mood for c in ch7 if c.mood is not None]
+        if len(moods_7) >= 3:
+            result["avg_mood_7d"] = round(sum(moods_7) / len(moods_7), 1)
+
+        ch_prev7 = checkins_in_range(13, 7)
+        prev_moods = [c.mood for c in ch_prev7 if c.mood is not None]
+        if len(prev_moods) >= 3:
+            result["avg_mood_prev_7d"] = round(sum(prev_moods) / len(prev_moods), 1)
+
+        current_avg = result.get("avg_mood_7d")
+        prev_avg = result.get("avg_mood_prev_7d")
+        if current_avg is not None and prev_avg is not None and (len(moods_7) + len(prev_moods)) >= 5:
+            diff = current_avg - prev_avg
+            result["mood_trend"] = "declining" if diff < -0.5 else "improving" if diff > 0.5 else "stable"
+        elif current_avg is not None and len(moods_7) >= 5:
+            first3 = sum(moods_7[:3]) / 3
+            last3 = sum(moods_7[-3:]) / 3
+            diff = last3 - first3
+            result["mood_trend"] = "declining" if diff < -0.5 else "improving" if diff > 0.5 else "stable"
+
+        # ── Low mood days of week ──
+        low_days = Counter()
+        for r in rows:
+            if r.mood is not None and r.mood < 4:
+                try:
+                    d = date.fromisoformat(r.date)
+                    low_days[d.strftime("%A")] += 1
+                except ValueError:
+                    pass
+        recurring_low = [day for day, count in low_days.items() if count >= 2]
+        if recurring_low:
+            result["low_mood_days_of_week"] = recurring_low
+
+        # ── Sleep ──
+        sleeps_7 = [c.sleep_hours for c in ch7 if c.sleep_hours is not None and c.sleep_hours > 0]
+        if len(sleeps_7) >= 3:
+            result["avg_sleep_7d"] = round(sum(sleeps_7) / len(sleeps_7), 1)
+
+        prev_sleeps = [c.sleep_hours for c in ch_prev7 if c.sleep_hours is not None and c.sleep_hours > 0]
+        prev_sleep_avg = round(sum(prev_sleeps) / len(prev_sleeps), 1) if len(prev_sleeps) >= 3 else None
+        current_sleep_avg = result.get("avg_sleep_7d")
+        if current_sleep_avg is not None and prev_sleep_avg is not None and (len(sleeps_7) + len(prev_sleeps)) >= 5:
+            sleep_diff = current_sleep_avg - prev_sleep_avg
+            result["sleep_trend"] = "declining" if sleep_diff < -0.5 else "improving" if sleep_diff > 0.5 else "stable"
+
+        # ── Task completion rate (last 7 days) ──
+        task_start = (today - timedelta(days=7)).isoformat()
+        tasks_7 = db.query(CompanionTask).filter(
+            CompanionTask.owner == owner,
+            CompanionTask.date >= task_start
+        ).all()
+        if tasks_7:
+            total = len(tasks_7)
+            completed = sum(1 for t in tasks_7 if t.status == "done")
+            if total > 0:
+                result["task_completion_rate_7d"] = round(completed / total, 2)
+
+        # ── Common carry-over tasks ──
+        carry_cutoff = (today - timedelta(days=21)).isoformat()
+        carry_over_tasks = db.query(CompanionTask).filter(
+            CompanionTask.owner == owner,
+            CompanionTask.date >= carry_cutoff,
+            CompanionTask.carried_over == True
+        ).all()
+        carry_titles = Counter(t.title for t in carry_over_tasks)
+        common = [title for title, count in carry_titles.items() if count >= 3]
+        if common:
+            result["common_carry_over_tasks"] = common
+
+        # ── Check-in streak ──
+        streak = 0
+        for i in range(60):
+            d = (today - timedelta(days=i)).isoformat()
+            if d in checkins_by_date:
+                streak += 1
+            else:
+                break
+        if streak > 0:
+            result["checkin_streak_days"] = streak
+
+        # ── EOD rating trend ──
+        eod_ratings_7 = [c.eod_rating for c in ch7 if c.eod_rating is not None]
+        if len(eod_ratings_7) >= 3:
+            first3_eod = sum(eod_ratings_7[:3]) / 3
+            last3_eod = sum(eod_ratings_7[-3:]) / 3
+            eod_diff = last3_eod - first3_eod
+            result["eod_rating_trend"] = "declining" if eod_diff < -0.5 else "improving" if eod_diff > 0.5 else "stable"
+
+        return result
+    finally:
+        db.close()
+
+
 def _resolve_companion_endpoint(owner=None):
     """Resolve (url, model, headers) for companion AI calls.
 
@@ -316,13 +451,30 @@ def setup_companion_routes() -> APIRouter:
         if not url or not model:
             return {"message": "I'm here when you need me."}
 
+        owner = token_owner(request)
         if messages:
             # Conversation mode — preserve existing messages, just respond
+            pattern_context = ""
+            patterns = detect_patterns(owner)
+            if not patterns.get("insufficient_data"):
+                parts = []
+                if patterns.get("avg_sleep_7d") is not None:
+                    parts.append(f"sleep this week averaging {patterns['avg_sleep_7d']}h")
+                if patterns.get("mood_trend"):
+                    parts.append(f"mood has been {patterns['mood_trend']}")
+                if patterns.get("checkin_streak_days") and patterns["checkin_streak_days"] >= 3:
+                    parts.append(f"they've checked in {patterns['checkin_streak_days']} days straight")
+                if parts:
+                    pattern_context = (
+                        f"\n\nRelevant context (only reference if the conversation naturally goes there; "
+                        f"never volunteer unprompted): {'; '.join(parts)}."
+                    )
+
             system_prompt = (
                 "You are a calm, supportive companion. Keep your responses warm, "
                 "brief (1-3 sentences), and conversational. Never be overly "
                 "cheerful. Feel like a quiet, understanding presence."
-            )
+            ) + pattern_context
             conversation = [{"role": "system", "content": system_prompt}]
             for msg in messages:
                 conversation.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
@@ -342,11 +494,26 @@ def setup_companion_routes() -> APIRouter:
             elif mood_delta >= 3:
                 tone_modifier = " The user's mood improved noticeably. Be warm and affirming."
 
+        # ── Lightweight pattern context (only if highly relevant) ──
+        pattern_hint = ""
+        patterns = detect_patterns(owner)
+        if not patterns.get("insufficient_data"):
+            if patterns.get("mood_trend") == "declining" and mood <= 4:
+                pattern_hint = (
+                    " (Note: their mood has been trending down this week, "
+                    "and today is also low — be especially gentle.)"
+                )
+            elif (patterns.get("checkin_streak_days") or 0) >= 7:
+                pattern_hint = (
+                    f" (Note: they've checked in {patterns['checkin_streak_days']} days "
+                    f"straight — a very brief nod to consistency is fine if it fits.)"
+                )
+
         system_prompt = (
             "You are a calm, supportive companion. Generate ONE short sentence "
             "(max 20 words) that acknowledges the user's current state. Be warm "
             "but not overly cheerful. Never give advice or ask questions. "
-            "Feel like a quiet presence, not a coach." + tone_modifier
+            "Feel like a quiet presence, not a coach." + tone_modifier + pattern_hint
         )
 
         user_prompt = (
@@ -420,6 +587,12 @@ def setup_companion_routes() -> APIRouter:
             return {"ok": True}
         finally:
             db.close()
+
+    @router.get("/patterns")
+    def get_patterns(request: Request):
+        """Detect and return patterns from check-in and task data."""
+        owner = token_owner(request)
+        return detect_patterns(owner)
 
     @router.get("/checkins")
     def get_checkins(request: Request):
@@ -708,6 +881,37 @@ def setup_companion_routes() -> APIRouter:
         )
         if pending_tasks:
             user_prompt += f" Pending tasks from yesterday: {pending_tasks}"
+
+        # ── Pattern context ──
+        owner = token_owner(request)
+        patterns = detect_patterns(owner)
+        if not patterns.get("insufficient_data"):
+            context_hints = []
+            if patterns.get("mood_trend") == "declining" and (patterns.get("checkin_streak_days") or 0) >= 3:
+                context_hints.append(
+                    "Note: user's mood has been trending down over the past week. "
+                    "Be gentle, don't ignore it, but don't be heavy about it either — "
+                    "maybe one acknowledging sentence."
+                )
+            if (patterns.get("task_completion_rate_7d") or 1) < 0.4:
+                common_tasks = patterns.get("common_carry_over_tasks", [])
+                if common_tasks:
+                    context_hints.append(
+                        f"User has been carrying over similar tasks repeatedly. "
+                        f"If relevant, gently suggest breaking down or deprioritizing "
+                        f"one of: {common_tasks}"
+                    )
+            if (patterns.get("checkin_streak_days") or 0) >= 7:
+                context_hints.append(
+                    f"User has checked in for {patterns['checkin_streak_days']} days straight — "
+                    f"if it fits naturally, a brief acknowledgement of consistency is nice "
+                    f"(not over the top)."
+                )
+            if context_hints:
+                user_prompt += (
+                    "\n\nRelevant context (use only if natural, don't force it): "
+                    + " ".join(context_hints)
+                )
 
         try:
             from src.llm_core import llm_call

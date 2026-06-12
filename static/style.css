@@ -37291,3 +37291,160 @@ body.theme-frosted .modal {
   gap: 4px;
   align-items: center;
 }
+
+/* ═══ Collapsible Just-talk card ═══ */
+.companion-chat-card {
+  margin-top: 16px;
+}
+.companion-chat-card .companion-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+.companion-chat-card .companion-card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.companion-chat-card .companion-card-collapse-btn {
+  background: none;
+  border: none;
+  color: var(--fg);
+  opacity: 0.3;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.companion-chat-card .companion-card-collapse-btn:hover {
+  opacity: 0.7;
+}
+.companion-chat-card .companion-chevron {
+  transition: transform 0.2s ease;
+  opacity: 0.4;
+  flex-shrink: 0;
+}
+.companion-chat-card.expanded .companion-chevron {
+  transform: rotate(180deg);
+}
+.companion-chat-card .companion-card-title {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+.companion-chat-card .companion-card-body {
+  overflow: hidden;
+  transition: max-height 0.25s ease, opacity 0.2s ease;
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+}
+.companion-chat-card.expanded .companion-card-body {
+  max-height: 340px;
+  opacity: 1;
+  padding-top: 8px;
+}
+.companion-chat-card .companion-chat-log {
+  max-height: 220px;
+}
+
+/* ═══ Patterns card ═══ */
+.companion-patterns-card {
+  margin-top: 12px;
+}
+.companion-patterns-card .companion-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+.companion-patterns-card .companion-card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.companion-patterns-card .companion-chevron {
+  transition: transform 0.2s ease;
+  opacity: 0.4;
+  flex-shrink: 0;
+}
+.companion-patterns-card.expanded .companion-chevron {
+  transform: rotate(180deg);
+}
+.companion-patterns-card .companion-card-title {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+.companion-patterns-card .companion-card-body {
+  overflow: hidden;
+  transition: max-height 0.25s ease, opacity 0.2s ease;
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+}
+.companion-patterns-card.expanded .companion-card-body {
+  max-height: 600px;
+  opacity: 1;
+  padding-top: 8px;
+}
+.companion-patterns-content {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.companion-patterns-content .patterns-line {
+  padding: 2px 0;
+  opacity: 0.85;
+}
+.companion-patterns-content .patterns-insufficient {
+  opacity: 0.5;
+  font-style: italic;
+}
+
+/* ═══ Typing indicator ═══ */
+.companion-typing {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 12px;
+  min-height: 28px;
+}
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg);
+  opacity: 0.35;
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-4px); opacity: 0.8; }
+}
+
+/* ═══ Chat error bubble ═══ */
+.companion-chat-msg.chat-msg-error {
+  align-self: flex-start;
+  background: color-mix(in srgb, #e06c75 10%, var(--panel));
+  border: 1px solid color-mix(in srgb, #e06c75 25%, var(--border));
+  color: color-mix(in srgb, #e06c75 85%, var(--fg));
+}
+.companion-chat-msg.chat-msg-error .chat-retry-btn {
+  background: none;
+  border: 1px solid color-mix(in srgb, #e06c75 35%, transparent);
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 2px 8px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+.companion-chat-msg.chat-msg-error .chat-retry-btn:hover {
+  background: color-mix(in srgb, #e06c75 15%, transparent);
+}

@@ -1321,12 +1321,20 @@
         <button type="button" class="companion-priority-btn" id="companion-triage-btn">Help me prioritize</button>
 
         <!-- Just talk chat -->
-        <div class="companion-card" id="companion-chat-card">
-          <div class="companion-card-title">💬 Just talk</div>
-          <div id="companion-chat-log" class="companion-chat-log"></div>
-          <div class="companion-chat-input-row">
-            <input type="text" id="companion-chat-input" placeholder="Type anything..." class="companion-input" style="flex:1;">
-            <button type="button" class="confirm-btn confirm-btn-primary" id="companion-chat-send" style="flex-shrink:0;">Send</button>
+        <div class="companion-card companion-chat-card" id="companion-chat-card">
+          <div class="companion-card-header" id="companion-chat-header">
+            <div class="companion-card-title">💬 Just talk</div>
+            <div class="companion-card-header-actions">
+              <button type="button" class="companion-card-collapse-btn" id="companion-chat-collapse" title="Collapse">×</button>
+              <svg class="companion-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </div>
+          <div class="companion-card-body" id="companion-chat-body">
+            <div id="companion-chat-log" class="companion-chat-log"></div>
+            <div class="companion-chat-input-row">
+              <input type="text" id="companion-chat-input" placeholder="Type anything..." class="companion-input" style="flex:1;">
+              <button type="button" class="confirm-btn confirm-btn-primary" id="companion-chat-send" style="flex-shrink:0;">Send</button>
+            </div>
           </div>
         </div>
       </div>
@@ -1336,6 +1344,18 @@
         <div id="companion-mood-grid"></div>
         <div id="companion-history-list" class="companion-history-list"></div>
         <div id="companion-history-detail" class="companion-history-list" style="margin-top:8px;"></div>
+        <!-- Patterns card -->
+        <div class="companion-card companion-patterns-card" id="companion-patterns-card">
+          <div class="companion-card-header" id="companion-patterns-header">
+            <div class="companion-card-title">📊 Patterns</div>
+            <div class="companion-card-header-actions">
+              <svg class="companion-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </div>
+          <div class="companion-card-body" id="companion-patterns-body">
+            <div id="companion-patterns-content" class="companion-patterns-content"></div>
+          </div>
+        </div>
       </div>
 
       <!-- Profile panel -->
