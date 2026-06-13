@@ -1224,6 +1224,7 @@
       <button class="companion-tab" data-companion-tab="today">Today</button>
       <button class="companion-tab" data-companion-tab="history">History</button>
       <button class="companion-tab" data-companion-tab="profile">Profile</button>
+      <button class="companion-tab" data-companion-tab="lifestyle">Routine</button>
     </div>
     <div class="companion-panel-body">
 
@@ -1311,7 +1312,8 @@
         <div class="companion-add-task-form">
           <input type="text" id="companion-task-input" placeholder="Add a task..." maxlength="80" class="companion-input" style="flex:1;">
           <input type="number" id="companion-task-time" placeholder="min" min="1" class="companion-input" style="width:50px;flex-shrink:0;">
-          <select id="companion-task-priority" class="companion-input" style="width:80px;flex-shrink:0;">
+          <input type="time" id="companion-task-due" class="companion-input" style="width:90px;flex-shrink:0;" title="Due time (optional)">
+          <select id="companion-task-priority" class="companion-input" style="width:74px;flex-shrink:0;">
             <option value="High">High</option>
             <option value="Medium" selected>Medium</option>
             <option value="Low">Low</option>
@@ -1354,6 +1356,7 @@
           </div>
           <div class="companion-card-body" id="companion-patterns-body">
             <div id="companion-patterns-content" class="companion-patterns-content"></div>
+            <div id="companion-patterns-suggestion" class="companion-patterns-suggestion hidden"></div>
           </div>
         </div>
       </div>
@@ -1384,6 +1387,31 @@
           </div>
         </div>
         <div class="companion-field">
+          <label>Birthday <span class="companion-optional">optional</span></label>
+          <input type="date" id="companion-profile-birthday" class="companion-input">
+        </div>
+        <div class="companion-field">
+          <label>MBTI type <span class="companion-optional">optional</span></label>
+          <input type="text" id="companion-profile-mbti" maxlength="4" placeholder="e.g. INFJ" class="companion-input">
+        </div>
+        <div class="companion-field">
+          <label>Enneagram type <span class="companion-optional">optional</span></label>
+          <input type="text" id="companion-profile-enneagram" maxlength="4" placeholder="e.g. 4w5" class="companion-input">
+        </div>
+        <div class="companion-field">
+          <label>Additional conditions <span class="companion-optional">optional</span></label>
+          <textarea id="companion-profile-additional" maxlength="300" placeholder="e.g. autism, bipolar, OCD, PTSD, chronic pain, or anything else" class="companion-input" style="min-height:60px;resize:vertical"></textarea>
+          <div style="font-size:11px;color:#888;margin-top:2px;"><span id="companion-profile-additional-counter">0</span>/300</div>
+        </div>
+        <div class="companion-field">
+          <label>Sleep schedule <span class="companion-optional">optional</span></label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="time" id="companion-profile-sleep-start" class="companion-input" style="flex:1">
+            <span style="color:#888">to</span>
+            <input type="time" id="companion-profile-sleep-end" class="companion-input" style="flex:1">
+          </div>
+        </div>
+        <div class="companion-field">
           <label>Natural energy pattern</label>
           <div class="companion-pattern-grid">
             <button type="button" class="companion-pattern-btn" data-companion-pattern="Morning Person">Morning Person</button>
@@ -1395,6 +1423,40 @@
           <button type="button" class="confirm-btn" id="companion-sync-btn">Sync to server</button>
         </div>
       </div>
+
+      <!-- Lifestyle panel -->
+      <div data-companion-panel="lifestyle" class="hidden">
+        <div class="companion-card">
+          <div class="companion-card-title">🗓️ Daily Routine</div>
+          <div class="companion-card-body">
+            <!-- Weekday schedule -->
+            <div class="companion-field">
+              <label>Typical Weekday</label>
+              <div id="companion-weekday-blocks"></div>
+              <button type="button" class="confirm-btn" id="companion-weekday-add" style="width:100%;margin-top:4px;">+ Add block</button>
+            </div>
+
+            <!-- Weekend schedule -->
+            <div class="companion-field" style="margin-top:12px;">
+              <label>Typical Weekend</label>
+              <div id="companion-weekend-blocks"></div>
+              <button type="button" class="confirm-btn" id="companion-weekend-add" style="width:100%;margin-top:4px;">+ Add block</button>
+            </div>
+
+            <!-- Empty state helper text (shown when no blocks exist) -->
+            <div id="companion-lifestyle-empty" class="hidden" style="text-align:center;padding:16px 8px;opacity:0.5;font-size:12px;">
+              No routine set yet — add your typical day below
+            </div>
+
+            <!-- Save button -->
+            <div style="display:flex;gap:6px;margin-top:8px;">
+              <button type="button" class="confirm-btn confirm-btn-primary" id="companion-lifestyle-save" style="flex:1;">Save routine</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
 
     </div>
   </div>

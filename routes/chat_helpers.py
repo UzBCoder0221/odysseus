@@ -1075,6 +1075,16 @@ def run_post_response_tasks(
     if _extraction_jobs:
         asyncio.create_task(_run_extraction_jobs_sequentially(session_id, _extraction_jobs))
 
+    # Companion memory extraction — every message, not every 4th
+    if allow_background_extraction and not incognito and not compare_mode and owner:
+        message_stripped = message.strip()
+        if len(message_stripped) >= 15:
+            try:
+                from companion.routes import extract_companion_memory_from_chat
+                asyncio.create_task(extract_companion_memory_from_chat(owner, message_stripped, memory_manager))
+            except Exception as exc:
+                logger.debug("[companion-memory] extraction dispatch failed: %s", exc)
+
     # Token accumulation
     if last_metrics:
         accumulate_token_usage(session_id, last_metrics)

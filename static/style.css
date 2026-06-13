@@ -36704,7 +36704,8 @@ body.theme-frosted .modal {
   position: fixed;
   top: 0;
   right: 0;
-  width: min(380px, 88vw);
+  width: min(420px, 90vw);
+  max-width: 480px;
   height: 100vh;
   z-index: 1000;
   background: var(--bg);
@@ -37402,6 +37403,56 @@ body.theme-frosted .modal {
 .companion-patterns-content .patterns-insufficient {
   opacity: 0.5;
   font-style: italic;
+}
+.companion-patterns-suggestion {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(255,193,7,0.08);
+  border-left: 2px solid rgba(255,193,7,0.4);
+  border-radius: 4px;
+}
+.companion-patterns-suggestion .patterns-suggestion-title {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 3px;
+  opacity: 0.7;
+}
+.companion-patterns-suggestion .patterns-suggestion-text {
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 0.85;
+}
+
+/* ═══ Lifestyle rows ═══ */
+.companion-lifestyle-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+.companion-lifestyle-row .companion-input {
+  font-size: 11px;
+  padding: 4px 6px;
+  min-width: 0;
+}
+.companion-lifestyle-row input[type="time"] {
+  min-width: 80px;
+  flex: 1 1 75px;
+}
+.companion-lifestyle-row .companion-lifestyle-label {
+  flex: 2 1 80px;
+  min-width: 60px;
+}
+.companion-lifestyle-row select.companion-lifestyle-type {
+  flex: 1 1 70px;
+  min-width: 60px;
+}
+.companion-lifestyle-row .companion-lifestyle-remove {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  font-size: 11px;
 }
 
 /* ═══ Typing indicator ═══ */

@@ -260,6 +260,384 @@ def _resolve_companion_endpoint(owner=None):
         db.close()
 
 
+def get_current_lifestyle_context(owner):
+    """Determine current/next schedule blocks based on today's day type.
+    
+    Returns dict with current_block and next_block (each may be None).
+    """
+    from datetime import datetime, date
+    from core.database import SessionLocal, CompanionLifestyle
+    import json
+
+    try:
+        db = SessionLocal()
+        row = db.query(CompanionLifestyle).filter(
+            CompanionLifestyle.owner == owner
+        ).first()
+        if not row:
+            return {"current_block": None, "next_block": None}
+        db.close()
+    except Exception:
+        return {"current_block": None, "next_block": None}
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+    # Determine weekday vs weekend
+    today = date.today()
+    is_weekend = today.weekday() >= 5  # 5=Sat, 6=Sun
+    schedule_raw = row.weekend_schedule if is_weekend else row.weekday_schedule
+    if not schedule_raw:
+        return {"current_block": None, "next_block": None}
+    try:
+        blocks = json.loads(schedule_raw)
+    except (ValueError, TypeError):
+        return {"current_block": None, "next_block": None}
+    if not blocks:
+        return {"current_block": None, "next_block": None}
+
+    # Sort by start time
+    blocks.sort(key=lambda b: b.get("start", "00:00"))
+
+    now = datetime.now()
+    current_min = now.hour * 60 + now.minute
+
+    current_block = None
+    next_block = None
+
+    for b in blocks:
+        start_str = b.get("start", "")
+        end_str = b.get("end", "")
+        if not start_str or not end_str:
+            continue
+        try:
+            start_parts = start_str.split(":")
+            end_parts = end_str.split(":")
+            start_min = int(start_parts[0]) * 60 + int(start_parts[1])
+            end_min = int(end_parts[0]) * 60 + int(end_parts[1])
+        except (ValueError, IndexError):
+            continue
+
+        # Handle overnight blocks (end < start, e.g. sleep 23:00-07:00)
+        if end_min < start_min:
+            # If current time >= start OR current time < end, we're in it
+            if current_min >= start_min or current_min < end_min:
+                current_block = {"label": b.get("label", ""), "type": b.get("type", ""), "ends_at": end_str}
+                break
+        else:
+            if start_min <= current_min < end_min:
+                current_block = {"label": b.get("label", ""), "type": b.get("type", ""), "ends_at": end_str}
+                break
+
+        # Track first upcoming block (after current time)
+        if not next_block and start_min > current_min and (end_min > start_min or True):
+            next_block = {"label": b.get("label", ""), "type": b.get("type", ""), "starts_at": start_str}
+            # Don't break — keep looking for current block first
+            if not current_block and next_block:
+                pass
+
+    # If no current block found but we have a next_block, keep it
+    # If no next block found yet and no current block, pick the first
+    if not current_block and not next_block and blocks:
+        # Tomorrow's first block
+        pass
+
+    return {"current_block": current_block, "next_block": next_block}
+
+
+# In-memory store for the latest extracted fact — used by the "Noted" toast polling
+# endpoint. Set by extract_companion_memory_from_chat and _extract_eod_memory_facts.
+_latest_companion_fact: dict | None = None
+
+def _set_latest_companion_fact(fact: dict) -> None:
+    global _latest_companion_fact
+    _latest_companion_fact = fact
+
+def _get_latest_companion_fact() -> dict | None:
+    return _latest_companion_fact
+
+
+async def extract_companion_memory_from_chat(owner, message, memory_manager=None):
+    """Fire-and-forget extraction of a personal fact from a main chat message.
+    Skips short messages, calls companion endpoint with a focused prompt,
+    saves to the Brain's MemoryManager if a fact is found.
+    Returns the saved fact dict or None — caller may use for UI indicator.
+    """
+    if not message or len(message.strip()) < 15:
+        return None
+    if not owner:
+        return None
+
+    url, model, headers = _resolve_companion_endpoint(owner)
+    if not url or not model:
+        import logging
+        logging.getLogger("companion").debug(
+            "[memory-extract] no endpoint for owner=%s (url=%s model=%s)", owner, url, model
+        )
+        return None
+
+    from src.llm_core import llm_call_async
+    import json, uuid as _uuid
+
+    system_prompt = (
+        "You extract personal facts from user messages. Respond ONLY with a JSON "
+        'object {"content": "...", "category": "...", "is_sensitive": true|false} '
+        "or the word null if nothing to extract.\n\n"
+        "Categories: milestone, life_event, relationship, loss, preference, health, emotional_moment, other.\n"
+        "is_sensitive=true for: deaths, grief, serious illness, trauma, mental health crises.\n\n"
+        "Examples:\n"
+        'User: "i have got 2nd place in local running tournament"\n'
+        'Assistant: {"content": "User placed 2nd in a local running tournament", "category": "milestone", "is_sensitive": false}\n\n'
+        'User: "my dad passed away when I was young"\n'
+        'Assistant: {"content": "User father passed away when they were young", "category": "loss", "is_sensitive": true}\n\n'
+        'User: "started learning guitar last week"\n'
+        'Assistant: {"content": "User started learning guitar last week", "category": "life_event", "is_sensitive": false}\n\n'
+        'User: "what is 15% of 200"\n'
+        'Assistant: null\n\n'
+        "Extract milestones, achievements, life events, relationships, losses, health "
+        "changes, emotional moments. Skip trivial queries (math, weather, greetings)."
+    )
+
+    try:
+        reply = await llm_call_async(url, model, [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": message.strip()}
+        ], headers=headers, temperature=0.3, max_tokens=300)
+    except Exception as e:
+        import logging
+        logging.getLogger("companion").debug("[memory-extract] LLM call failed: %s", e)
+        return None
+
+    if not reply:
+        return None
+
+    text = reply.strip()
+    # Remove markdown fences if present
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(l for l in lines if not l.startswith("```"))
+
+    if text.strip() == "null" or not text.strip():
+        return None
+
+    # Try JSON parse; if fails, attempt regex extraction of first JSON object
+    try:
+        fact = json.loads(text)
+    except (ValueError, TypeError):
+        import re as _re
+        _brace_match = _re.search(r'\{[^{}]*\}', text, _re.DOTALL)
+        if _brace_match:
+            try:
+                fact = json.loads(_brace_match.group())
+            except (ValueError, TypeError):
+                import logging
+                logging.getLogger("companion").warning(
+                    "[memory-extract] unparseable response: %.200s", text
+                )
+                return None
+        else:
+            import logging
+            logging.getLogger("companion").warning(
+                "[memory-extract] unparseable response: %.200s", text
+            )
+            return None
+
+    if not isinstance(fact, dict) or "content" not in fact:
+        return None
+
+    content = str(fact.get("content", ""))[:150]
+    if not content or len(content) < 5:
+        return None
+    category = str(fact.get("category", "other"))[:30]
+    if category not in ("life_event", "relationship", "loss", "milestone", "preference",
+                        "health", "emotional_moment", "other"):
+        category = "other"
+    is_sensitive = bool(fact.get("is_sensitive", False))
+    source_excerpt = str(fact.get("source_excerpt", ""))[:200]
+
+    # Save into the Brain's MemoryManager
+    if memory_manager is None:
+        from src.memory import MemoryManager
+        from src.constants import DATA_DIR
+        memory_manager = MemoryManager(DATA_DIR)
+
+    try:
+        fact_id = str(_uuid.uuid4())
+        entry = memory_manager.add_entry(content, source="auto", category=category, owner=owner)
+        entry["id"] = fact_id
+        entry["is_sensitive"] = is_sensitive
+        if source_excerpt:
+            entry["source_excerpt"] = source_excerpt
+        all_entries = memory_manager.load_all()
+        all_entries.append(entry)
+        memory_manager.save(all_entries)
+        import logging
+        logging.getLogger("companion").info(
+            "[memory-extract] saved fact id=%s cat=%s content=%.80s", fact_id, category, content
+        )
+        # Store latest extracted fact for "Noted" toast polling
+        _set_latest_companion_fact({
+            "id": fact_id, "content": content, "category": category,
+            "is_sensitive": is_sensitive, "source": "realtime",
+        })
+        return {"id": fact_id, "content": content, "category": category,
+                "is_sensitive": is_sensitive, "source": "realtime"}
+    except Exception as exc:
+        import logging
+        logging.getLogger("companion").debug("[memory-extract] save failed: %s", exc)
+        return None
+
+
+async def _extract_eod_memory_facts(owner, eod_done, eod_blocked, eod_tomorrow, memory_manager=None):
+    """Fire-and-forget EOD batch extraction. Gathers up to 3 facts from
+    EOD reflection text and saves them into the Brain's MemoryManager.
+    """
+    if not owner:
+        return
+
+    url, model, headers = _resolve_companion_endpoint(owner)
+    if not url or not model:
+        return
+
+    from src.llm_core import llm_call_async
+    import json, uuid as _uuid
+
+    prompt = (
+        "You are a memory extraction assistant focused on emotionally or personally significant moments.\n\n"
+        "Based on the user's end-of-day reflection:\n"
+        f"Done: '{eod_done}' | Blocked: '{eod_blocked}' | Tomorrow: '{eod_tomorrow}'\n\n"
+        "Extract up to 3 NEW personal facts worth remembering long-term (life events, relationships, "
+        "milestones, health notes, emotional moments) that aren't just routine task completion.\n\n"
+        "IGNORE (these are already handled by the general memory system):\n"
+        "- Identity facts (name, job, location)\n"
+        "- Generic preferences ('I like pizza')\n"
+        "- Routine task completion updates\n\n"
+        "Respond with ONLY a JSON array (can be empty []):\n"
+        '[{"content": "short factual statement, max 150 chars, third person", '
+        '"category": "life_event|relationship|loss|milestone|preference|health|emotional_moment|other", '
+        '"is_sensitive": true|false}]\n\n'
+        "is_sensitive should be true for: deaths, grief, serious illness, trauma, mental health crises.\n\n"
+        "No markdown, no explanation."
+    )
+
+    try:
+        reply = await llm_call_async(url, model, [
+            {"role": "user", "content": prompt}
+        ], headers=headers, temperature=0.3, max_tokens=500)
+    except Exception:
+        return
+
+    if not reply:
+        return
+
+    text = reply.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(l for l in lines if not l.startswith("```"))
+
+    try:
+        facts = json.loads(text)
+    except (ValueError, TypeError):
+        return
+
+    if not isinstance(facts, list):
+        return
+
+    if memory_manager is None:
+        from src.memory import MemoryManager
+        from src.constants import DATA_DIR
+        memory_manager = MemoryManager(DATA_DIR)
+
+    try:
+        existing = memory_manager.load(owner) or []
+        existing_texts = [e.get("text", "").lower() for e in existing]
+
+        for fact in facts:
+            if not isinstance(fact, dict) or "content" not in fact:
+                continue
+            content = str(fact.get("content", ""))[:150].strip()
+            if not content or len(content) < 5:
+                continue
+            category = str(fact.get("category", "other"))[:30]
+            if category not in ("life_event", "relationship", "loss", "milestone",
+                                "preference", "health", "emotional_moment", "other"):
+                category = "other"
+            is_sensitive = bool(fact.get("is_sensitive", False))
+
+            # Simple deduplication: skip if similar content already exists
+            content_lower = content.lower()
+            is_dup = False
+            for existing_text in existing_texts:
+                if content_lower == existing_text:
+                    is_dup = True
+                    break
+                words = set(content_lower.split())
+                ex_words = set(existing_text.split())
+                if len(words) > 3 and len(ex_words) > 3:
+                    overlap = len(words & ex_words) / max(len(words), len(ex_words))
+                    if overlap > 0.6:
+                        is_dup = True
+                        break
+            if is_dup:
+                continue
+
+            entry = memory_manager.add_entry(content, source="auto", category=category, owner=owner)
+            entry["id"] = str(_uuid.uuid4())
+            entry["is_sensitive"] = is_sensitive
+            all_entries = memory_manager.load_all()
+            all_entries.append(entry)
+            memory_manager.save(all_entries)
+    except Exception:
+        pass
+
+
+def get_relevant_memory_context(owner, limit=5):
+    """Return relevant personal facts from the Brain's MemoryManager for prompt injection.
+    Returns a formatted string or empty string if no facts exist.
+    Sensitive facts get an extra caution instruction.
+    """
+    if not owner:
+        return ""
+    from src.memory import MemoryManager
+    from src.constants import DATA_DIR
+    mm = MemoryManager(DATA_DIR)
+    try:
+        entries = mm.load(owner)
+        if not entries:
+            return ""
+        # Sort by timestamp descending
+        entries = sorted(entries, key=lambda e: e.get("timestamp", 0), reverse=True)[:limit]
+        lines = []
+        has_sensitive = False
+        for e in entries:
+            text = e.get("text", "")
+            if not text:
+                continue
+            if e.get("is_sensitive"):
+                has_sensitive = True
+                lines.append(f"- {text} (sensitive — handle with care)")
+            else:
+                lines.append(f"- {text}")
+        if not lines:
+            return ""
+        result = (
+            "\n\nRelevant context about this person (reference ONLY if naturally relevant, "
+            "never list these out or interrogate the user about them):\n"
+            + "\n".join(lines)
+        )
+        if has_sensitive:
+            result += (
+                "\n\nSome of the above is marked sensitive. If relevant, handle with care; "
+                "do not bring it up casually or repeatedly. Never use it to make assumptions "
+                "about current mood unless the user themselves brings up something related."
+            )
+        return result
+    except Exception:
+        return ""
+
+
 def setup_companion_routes() -> APIRouter:
     router = APIRouter(prefix="/api/companion", tags=["companion"])
 
@@ -452,6 +830,31 @@ def setup_companion_routes() -> APIRouter:
             return {"message": "I'm here when you need me."}
 
         owner = token_owner(request)
+
+        # ── Profile context helper for message endpoints ──
+        def _profile_context_msg():
+            ctx = ""
+            try:
+                from core.database import SessionLocal as _S, CompanionProfile as _CP
+                _dbp = _S()
+                _prof = _dbp.query(_CP).filter(_CP.owner == owner).first()
+                if _prof:
+                    parts = []
+                    if _prof.mbti_type:
+                        parts.append(f"MBTI: {_prof.mbti_type}")
+                    if _prof.enneagram_type:
+                        parts.append(f"Enneagram: {_prof.enneagram_type}")
+                    if _prof.sleep_schedule_start and _prof.sleep_schedule_end:
+                        parts.append(f"sleep schedule {_prof.sleep_schedule_start}-{_prof.sleep_schedule_end}")
+                    if _prof.additional_conditions:
+                        parts.append(f"additional context: {_prof.additional_conditions}")
+                    if parts:
+                        ctx = "\n\nProfile context (use only if conversation naturally goes there, don't force): " + "; ".join(parts) + "."
+                _dbp.close()
+            except Exception:
+                pass
+            return ctx
+
         if messages:
             # Conversation mode — preserve existing messages, just respond
             pattern_context = ""
@@ -470,11 +873,30 @@ def setup_companion_routes() -> APIRouter:
                         f"never volunteer unprompted): {'; '.join(parts)}."
                     )
 
+            lifestyle_context = ""
+            try:
+                ls_ctx = get_current_lifestyle_context(owner)
+                cb = ls_ctx.get("current_block")
+                nb = ls_ctx.get("next_block")
+                if cb and cb["type"] in ("work", "school"):
+                    lifestyle_context = f"\n\nThe user is currently at {cb['label']} until {cb['ends_at']}."
+                if nb and nb["type"] == "free":
+                    lifestyle_context += f"\nThey have free time at {nb['starts_at']} — a good window for tasks."
+            except Exception:
+                pass
+
+            # ── Memory context (conversation mode) ──
+            mem_ctx_conv = ""
+            try:
+                mem_ctx_conv = get_relevant_memory_context(owner, limit=3)
+            except Exception:
+                pass
+
             system_prompt = (
                 "You are a calm, supportive companion. Keep your responses warm, "
                 "brief (1-3 sentences), and conversational. Never be overly "
                 "cheerful. Feel like a quiet, understanding presence."
-            ) + pattern_context
+            ) + pattern_context + _profile_context_msg() + lifestyle_context + mem_ctx_conv
             conversation = [{"role": "system", "content": system_prompt}]
             for msg in messages:
                 conversation.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
@@ -516,10 +938,32 @@ def setup_companion_routes() -> APIRouter:
             "Feel like a quiet presence, not a coach." + tone_modifier + pattern_hint
         )
 
+        profile_ctx = _profile_context_msg()
         user_prompt = (
             f"User state: mood {mood}/10, energy {energy}/10, slept {sleep_hours}h. "
             f"Conditions: {conditions}. Time of day: {time_of_day}."
         )
+        if profile_ctx:
+            user_prompt += profile_ctx
+
+        # ── Lifestyle context (only for work/school blocks) ──
+        try:
+            ls_ctx = get_current_lifestyle_context(owner)
+            cb = ls_ctx.get("current_block")
+            if cb and cb["type"] in ("work", "school"):
+                user_prompt += f"\n\nThe user is currently at {cb['label']} (until {cb['ends_at']})."
+                if energy <= 3:
+                    user_prompt += f" Tough to push through a long day at {cb['label']} when energy's low — small wins count."
+        except Exception:
+            pass
+
+        # ── Memory context (bar message) ──
+        try:
+            mem_ctx_bar = get_relevant_memory_context(owner, limit=3)
+            if mem_ctx_bar:
+                user_prompt += mem_ctx_bar
+        except Exception:
+            pass
 
         try:
             from src.llm_core import llm_call
@@ -554,6 +998,12 @@ def setup_companion_routes() -> APIRouter:
                 "conditions": json.loads(profile.conditions or "[]"),
                 "energy_pattern": profile.energy_pattern or "Variable",
                 "ideal_sleep_hours": profile.ideal_sleep_hours or 8,
+                "birthday": profile.birthday,
+                "mbti_type": profile.mbti_type,
+                "enneagram_type": profile.enneagram_type,
+                "additional_conditions": profile.additional_conditions,
+                "sleep_schedule_start": profile.sleep_schedule_start,
+                "sleep_schedule_end": profile.sleep_schedule_end,
             }
         finally:
             db.close()
@@ -583,16 +1033,141 @@ def setup_companion_routes() -> APIRouter:
             profile.conditions = json.dumps(body.get("conditions", []))
             profile.energy_pattern = body.get("energy_pattern", "Variable")
             profile.ideal_sleep_hours = body.get("ideal_sleep_hours", 8)
+            profile.birthday = body.get("birthday")
+            profile.mbti_type = body.get("mbti_type")
+            profile.enneagram_type = body.get("enneagram_type")
+            profile.additional_conditions = body.get("additional_conditions")
+            profile.sleep_schedule_start = body.get("sleep_schedule_start")
+            profile.sleep_schedule_end = body.get("sleep_schedule_end")
             db.commit()
             return {"ok": True}
         finally:
             db.close()
+
+    # ── Pattern suggestion daily cache ──
+    _pattern_suggestion_cache: dict = {}
 
     @router.get("/patterns")
     def get_patterns(request: Request):
         """Detect and return patterns from check-in and task data."""
         owner = token_owner(request)
         return detect_patterns(owner)
+
+    @router.get("/patterns/suggestion")
+    def get_pattern_suggestion(request: Request):
+        """AI-generated suggestion based on detected patterns (cached daily)."""
+        owner = token_owner(request)
+        from datetime import date as _d
+        cache_key = f"{owner}:{_d.today().isoformat()}"
+        cached = getattr(get_pattern_suggestion, "_suggestion_cache", {})
+        if cache_key in cached:
+            return {"suggestion": cached[cache_key]}
+
+        patterns = detect_patterns(owner)
+        if patterns.get("insufficient_data"):
+            return {"suggestion": "Complete more check-ins to unlock personalized insights."}
+
+        # Build a compact summary for the AI
+        summary_parts = []
+        if patterns.get("avg_mood_7d") is not None:
+            summary_parts.append(f"avg-mood-7d:{patterns['avg_mood_7d']:.1f}")
+        if patterns.get("avg_energy_7d") is not None:
+            summary_parts.append(f"avg-energy-7d:{patterns['avg_energy_7d']:.1f}")
+        if patterns.get("avg_sleep_7d") is not None:
+            summary_parts.append(f"avg-sleep-7d:{patterns['avg_sleep_7d']:.1f}")
+        if "best_mood_hour" in patterns:
+            summary_parts.append(f"best-mood-hour:{patterns['best_mood_hour']}")
+        if patterns.get("mood_trend"):
+            summary_parts.append(f"mood-trend:{patterns['mood_trend']}")
+        if patterns.get("mood_volatility"):
+            summary_parts.append(f"volatility:{patterns['mood_volatility']}")
+        if patterns.get("sleep_regularity"):
+            summary_parts.append(f"sleep-regularity:{patterns['sleep_regularity']}")
+        if (patterns.get("checkin_streak_days") or 0) >= 2:
+            summary_parts.append(f"streak:{patterns['checkin_streak_days']}d")
+        summary = "; ".join(summary_parts)
+
+        url, model, headers = _resolve_companion_endpoint(owner=owner)
+        if not url or not model:
+            return {"suggestion": ""}
+
+        system_prompt = (
+            "You are a thoughtful insights bot. Based on the user's pattern "
+            "summary, suggest ONE simple, actionable tweak they could try today "
+            "(1 sentence, max 20 words). Be warm, not clinical."
+        )
+        try:
+            from src.llm_core import llm_call
+            suggestion = llm_call(url, model, [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Pattern summary: {summary}"}
+            ], temperature=0.7, max_tokens=60, headers=headers).strip()
+            if not suggestion:
+                suggestion = "Try taking a moment to breathe between tasks."
+            cached[cache_key] = suggestion
+            get_pattern_suggestion._suggestion_cache = cached
+            return {"suggestion": suggestion}
+        except Exception:
+            return {"suggestion": "Try taking a moment to breathe between tasks."}
+
+    @router.get("/lifestyle")
+    def get_lifestyle(request: Request):
+        """Get the user's weekday/weekend schedule blocks."""
+        from core.database import SessionLocal, CompanionLifestyle
+        owner = token_owner(request)
+        if not owner:
+            return {"weekday_schedule": [], "weekend_schedule": []}
+        db = SessionLocal()
+        try:
+            row = db.query(CompanionLifestyle).filter(
+                CompanionLifestyle.owner == owner
+            ).first()
+            if not row:
+                return {"weekday_schedule": [], "weekend_schedule": []}
+            return {
+                "weekday_schedule": json.loads(row.weekday_schedule) if row.weekday_schedule else [],
+                "weekend_schedule": json.loads(row.weekend_schedule) if row.weekend_schedule else [],
+            }
+        finally:
+            db.close()
+
+    @router.post("/lifestyle")
+    async def save_lifestyle(request: Request):
+        """Save the user's weekday/weekend schedule blocks (full replace)."""
+        import uuid as _uuid
+        from core.database import SessionLocal, CompanionLifestyle
+        body = await request.json()
+        owner = token_owner(request)
+        if not owner:
+            return {"ok": False}
+        db = SessionLocal()
+        try:
+            row = db.query(CompanionLifestyle).filter(
+                CompanionLifestyle.owner == owner
+            ).first()
+            if not row:
+                row = CompanionLifestyle(id=_uuid.uuid4().hex, owner=owner)
+                db.add(row)
+            row.weekday_schedule = json.dumps(body.get("weekday_schedule", []))
+            row.weekend_schedule = json.dumps(body.get("weekend_schedule", []))
+            db.commit()
+            return {"ok": True}
+        finally:
+            db.close()
+
+    # ── "Noted" toast endpoint (used by companion JS polling) ────────────
+
+    @router.get("/memory/latest")
+    def get_latest_memory(request: Request):
+        """Return the most recently extracted fact (in-memory), or null."""
+        owner = token_owner(request)
+        if not owner:
+            return {"fact": None}
+        fact = _get_latest_companion_fact()
+        if fact:
+            return {"fact": {"id": fact.get("id"), "content": fact.get("content"),
+                             "category": fact.get("category")}}
+        return {"fact": None}
 
     @router.get("/checkins")
     def get_checkins(request: Request):
@@ -705,6 +1280,18 @@ def setup_companion_routes() -> APIRouter:
                 if field in body:
                     setattr(entry, field, body[field])
             db.commit()
+
+            # Stage 7D: EOD batch memory extraction (fire-and-forget)
+            eod_done_val = body.get("eod_done", "") or ""
+            eod_blocked_val = body.get("eod_blocked", "") or ""
+            eod_tomorrow_val = body.get("eod_tomorrow", "") or ""
+            has_eod_content = any(len(v.strip()) > 10 for v in (eod_done_val, eod_blocked_val, eod_tomorrow_val))
+            if has_eod_content and owner:
+                import asyncio as _asyncio
+                _asyncio.ensure_future(_extract_eod_memory_facts(
+                    owner, eod_done_val, eod_blocked_val, eod_tomorrow_val,
+                ))
+
             return {
                 "ok": True,
                 "entry": {
@@ -758,6 +1345,11 @@ def setup_companion_routes() -> APIRouter:
                     "sub_steps": sub,
                     "created_at": row.created_at.isoformat() if row.created_at else "",
                     "completed_at": row.completed_at.isoformat() if row.completed_at else "",
+                    "due_time": row.due_time,
+                    "reminder_sent_pre": row.reminder_sent_pre or False,
+                    "reminder_sent_due": row.reminder_sent_due or False,
+                    "started_at": row.started_at.isoformat() if row.started_at else "",
+                    "last_progress_check_ts": row.last_progress_check_ts.isoformat() if row.last_progress_check_ts else "",
                 })
             return {"tasks": tasks}
         finally:
@@ -790,6 +1382,7 @@ def setup_companion_routes() -> APIRouter:
                 date=body.get("date", ""),
                 carried_over=body.get("carried_over", False),
                 sub_steps=json.dumps(body.get("sub_steps", [])),
+                due_time=body.get("due_time"),
             )
             db.add(task)
             db.commit()
@@ -833,6 +1426,18 @@ def setup_companion_routes() -> APIRouter:
                 task.carried_over = body["carried_over"]
             if "sub_steps" in body:
                 task.sub_steps = json.dumps(body["sub_steps"])
+            if "due_time" in body:
+                task.due_time = body["due_time"]
+            if "reminder_sent_pre" in body:
+                task.reminder_sent_pre = body["reminder_sent_pre"]
+            if "reminder_sent_due" in body:
+                task.reminder_sent_due = body["reminder_sent_due"]
+            if "last_progress_check_ts" in body:
+                val = body["last_progress_check_ts"]
+                task.last_progress_check_ts = datetime.fromisoformat(val) if val else None
+            if "started_at" in body:
+                val = body["started_at"]
+                task.started_at = datetime.fromisoformat(val) if val else None
             db.commit()
             return {"ok": True}
         finally:
@@ -882,6 +1487,55 @@ def setup_companion_routes() -> APIRouter:
         if pending_tasks:
             user_prompt += f" Pending tasks from yesterday: {pending_tasks}"
 
+        # ── Profile context ──
+        try:
+            from core.database import SessionLocal as _S, CompanionProfile as _CP
+            _dbp = _S()
+            _prof = _dbp.query(_CP).filter(_CP.owner == token_owner(request)).first()
+            if _prof:
+                _profile_hints = []
+                if _prof.birthday:
+                    from datetime import date as _d
+                    try:
+                        _bd = _d.fromisoformat(_prof.birthday)
+                        _today = _d.today()
+                        _next_bd = _bd.replace(year=_today.year)
+                        if _next_bd < _today:
+                            _next_bd = _bd.replace(year=_today.year + 1)
+                        _days_until = (_next_bd - _today).days
+                        _is_near = _today.month == _bd.month and abs(_today.day - _bd.day) <= 3
+                        if _days_until <= 3 or _is_near:
+                            _profile_hints.append(f"The user's birthday is within 3 days ({_prof.birthday}). A gentle happy-birthday acknowledgement is fine, but don't overdo it.")
+                    except ValueError:
+                        pass
+                if _prof.sleep_schedule_start and _prof.sleep_schedule_end:
+                    _profile_hints.append(f"Usual sleep schedule: {_prof.sleep_schedule_start} to {_prof.sleep_schedule_end}.")
+                if _prof.additional_conditions:
+                    _profile_hints.append(f"Additional conditions: {_prof.additional_conditions}.")
+                if _profile_hints:
+                    user_prompt += "\n\nProfile context: " + " ".join(_profile_hints)
+            _dbp.close()
+        except Exception:
+            pass
+
+        # ── Lifestyle context ──
+        try:
+            owner_ls = token_owner(request)
+            ls_ctx = get_current_lifestyle_context(owner_ls)
+            if ls_ctx.get("current_block"):
+                cb = ls_ctx["current_block"]
+                user_prompt += f"\n\nUser is currently at/in: {cb['label']} until {cb['ends_at']}."
+                if cb["type"] in ("work", "school"):
+                    user_prompt += " Keep task suggestions realistic — they can't start big tasks right now."
+            if ls_ctx.get("next_block"):
+                nb = ls_ctx["next_block"]
+                if nb["type"] == "meal":
+                    user_prompt += f" After their current block, they've got {nb['label']} around {nb['starts_at']}."
+                elif nb["type"] == "free":
+                    user_prompt += f" They have free time coming up at {nb['starts_at']} — a good window for tasks."
+        except Exception:
+            pass
+
         # ── Pattern context ──
         owner = token_owner(request)
         patterns = detect_patterns(owner)
@@ -912,6 +1566,14 @@ def setup_companion_routes() -> APIRouter:
                     "\n\nRelevant context (use only if natural, don't force it): "
                     + " ".join(context_hints)
                 )
+
+        # ── Memory context ──
+        try:
+            mem_ctx = get_relevant_memory_context(token_owner(request), limit=3)
+            if mem_ctx:
+                user_prompt += mem_ctx
+        except Exception:
+            pass
 
         try:
             from src.llm_core import llm_call

@@ -16,7 +16,13 @@ function defaultProfile() {
     timezone: tz,
     conditions: [],
     energyPattern: 'Variable',
-    idealSleepHours: 8
+    idealSleepHours: 8,
+    birthday: '',
+    mbtiType: '',
+    enneagramType: '',
+    additionalConditions: '',
+    sleepScheduleStart: '',
+    sleepScheduleEnd: '',
   };
 }
 
@@ -34,7 +40,13 @@ function saveProfile(p) {
       timezone: p.timezone || '',
       conditions: p.conditions || [],
       energy_pattern: p.energyPattern || 'Variable',
-      ideal_sleep_hours: p.idealSleepHours || 8
+      ideal_sleep_hours: p.idealSleepHours || 8,
+      birthday: p.birthday || null,
+      mbti_type: p.mbtiType || null,
+      enneagram_type: p.enneagramType || null,
+      additional_conditions: p.additionalConditions || null,
+      sleep_schedule_start: p.sleepScheduleStart || null,
+      sleep_schedule_end: p.sleepScheduleEnd || null,
     })
   }).catch(() => {});
 }
@@ -190,6 +202,7 @@ function switchTab(tab) {
   if (tab === 'today') loadTodayTab();
   if (tab === 'checkin') populateCheckinForm();
   if (tab === 'profile') populateProfileForm();
+  if (tab === 'lifestyle') populateLifestyleForm();
 }
 
 function populateCheckinForm() {
@@ -442,6 +455,17 @@ async function updatePatternsCard() {
       lines.push(`Low mood tends to happen on: ${data.low_mood_days_of_week.join(', ')}.`);
     }
     container.innerHTML = lines.map(l => `<div class="patterns-line">${esc(l)}</div>`).join('');
+
+    /* Fetch suggestion */
+    const sugRes = await fetch(`${API_BASE}/api/companion/patterns/suggestion`);
+    const sugData = await sugRes.json();
+    const sugEl = el('companion-patterns-suggestion');
+    if (sugEl && sugData.suggestion && !sugData.suggestion.includes('Complete more check-ins')) {
+      sugEl.innerHTML = `<div class="patterns-suggestion-title">💡 Suggestion</div><div class="patterns-suggestion-text">${esc(sugData.suggestion)}</div>`;
+      sugEl.classList.remove('hidden');
+    } else if (sugEl) {
+      sugEl.classList.add('hidden');
+    }
   } catch (_) {
     container.innerHTML = '<div class="patterns-insufficient">Could not load patterns.</div>';
   }
@@ -782,7 +806,7 @@ function shouldNudge() {
   return null;
 }
 
-function getNudgeMessages(type) {
+function getNudgeMessages(type, taskTitle, mealLabel) {
   const nudges = {
     greeting: ['Hey, just checking in. How are you feeling?'],
     midday: ['Quick check: how\'s your day going so far?', 'Mid-day pause — how are you holding up?', 'Halfway through the day — how\'s the energy?'],
@@ -790,11 +814,77 @@ function getNudgeMessages(type) {
     move: ['Time to stretch those legs. Walk a few steps?', 'Stand up, roll your shoulders, breathe.'],
     drink: ['Sip some water. Your brain will thank you.', 'Hydration check: had water recently?'],
     breathe: ['Close your eyes. Take three slow breaths.', 'Breathe in for 4, hold for 4, out for 4.'],
+    task_pre: ['Reminder: "' + (taskTitle || 'a task') + '" is due soon.', 'Heads up — "' + (taskTitle || 'a task') + '" is coming up.'],
+    task_due: ['"' + (taskTitle || 'A task') + '" is due now!', 'Time for "' + (taskTitle || 'a task') + '" — it\'s due.'],
+    task_progress: ['How\'s "' + (taskTitle || 'your task') + '" going? Need a hand?', 'Still working on "' + (taskTitle || 'that task') + '"?'],
+    meal_time: ['Around ' + (mealLabel || 'meal') + ' time — remember to eat something?'],
   };
   return nudges[type] || nudges.greeting;
 }
 
+function checkTaskReminders() {
+  const tasks = loadTasks();
+  const now = new Date();
+  const currentMin = now.getHours() * 60 + now.getMinutes();
+  let best = null;
+
+  for (const task of tasks) {
+    if (task.status === 'done' || !task.due_time) continue;
+    const parts = task.due_time.split(':');
+    const taskMin = parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+    const diff = taskMin - currentMin;
+
+    /* Pre-reminder: 15-20 min before due */
+    if (diff >= 15 && diff <= 20 && !task.reminder_sent_pre) {
+      if (!best || best.priority < 2) best = { priority: 2, type: 'task_pre', task: task };
+    }
+    /* Due reminder: within 5 min of due */
+    if (diff >= -5 && diff <= 5 && !task.reminder_sent_due) {
+      if (!best || best.priority < 3) best = { priority: 3, type: 'task_due', task: task };
+    }
+    /* Progress check: started but not done, check >30 min ago */
+    if (task.status === 'in_progress' && task.started_at) {
+      const lastCheck = task.last_progress_check_ts ? new Date(task.last_progress_check_ts).getTime() : 0;
+      if (Date.now() - lastCheck > 30 * 60 * 1000) {
+        if (!best || best.priority < 1) best = { priority: 1, type: 'task_progress', task: task };
+      }
+    }
+  }
+  return best;
+}
+
+function checkMealNudge() {
+  const data = Storage.getJSON(LIFESTYLE_KEY, { weekday_schedule: [], weekend_schedule: [] });
+  const now = new Date();
+  const isWeekend = now.getDay() === 0 || now.getDay() === 6;
+  const schedule = isWeekend ? data.weekend_schedule : data.weekday_schedule;
+  const currentMin = now.getHours() * 60 + now.getMinutes();
+  const dateKey = todayKey();
+  for (const block of schedule) {
+    if (block.type !== 'meal' || !block.start || !block.end) continue;
+    const sp = block.start.split(':');
+    const ep = block.end.split(':');
+    const startMin = parseInt(sp[0]) * 60 + parseInt(sp[1]);
+    const endMin = parseInt(ep[0]) * 60 + parseInt(ep[1]);
+    /* Within block or up to 15 min after end */
+    const inWindow = currentMin >= startMin && currentMin <= endMin + 15;
+    if (!inWindow) continue;
+    const shownKey = `meal_nudge_shown_${block.id}_${dateKey}`;
+    if (localStorage.getItem(shownKey)) continue;
+    return { block, shownKey };
+  }
+  return null;
+}
+
 function selectNudgeType() {
+  /* Task reminders take priority */
+  const taskReminder = checkTaskReminders();
+  if (taskReminder) return taskReminder.type;
+
+  /* Meal nudge (lowest priority among reminders, before 3A types) */
+  const mealNudge = checkMealNudge();
+  if (mealNudge) return 'meal_time';
+
   const h = new Date().getHours();
   const log = loadLog();
   const today = log[todayKey()];
@@ -808,6 +898,8 @@ function selectNudgeType() {
   return 'breathe';
 }
 
+let _currentTaskReminder = null;
+
 function showNudge() {
   const nudgeEl = el('companion-nudge');
   if (!nudgeEl) return;
@@ -816,17 +908,55 @@ function showNudge() {
   const now = Date.now();
   if (now - lastNudge < 30 * 60 * 1000) return;
 
-  const type = selectNudgeType();
-  const msgs = getNudgeMessages(type);
+  _currentTaskReminder = checkTaskReminders();
+  const _mealNudge = checkMealNudge();
+  const rawType = selectNudgeType();
+  const isTaskNudge = rawType === 'task_pre' || rawType === 'task_due' || rawType === 'task_progress';
+  const isMealNudge = rawType === 'meal_time';
+  const taskTitle = _currentTaskReminder?.task?.title || '';
+  const mealLabel = _mealNudge?.block?.label || '';
+  const type = isTaskNudge ? rawType : rawType;
+  const msgs = getNudgeMessages(type, taskTitle, mealLabel);
   const msg = msgs[Math.floor(Math.random() * msgs.length)];
 
-  const isActionNudge = type === 'midday' || type === 'eod' || type === 'greeting';
+  const isActionNudge = type === 'midday' || type === 'eod' || type === 'greeting' || isTaskNudge;
+  const nudgeAction = isTaskNudge ? (rawType + '|' + (_currentTaskReminder?.task?.id || '')) : type;
   nudgeEl.innerHTML = `
     <span class="companion-nudge-text">${esc(msg)}</span>
-    ${isActionNudge ? `<button class="companion-nudge-btn" data-nudge-action="${type}">Open companion</button>` : ''}
+    ${isActionNudge ? `<button class="companion-nudge-btn" data-nudge-action="${nudgeAction}">${isTaskNudge ? 'View task' : 'Open companion'}</button>` : ''}
     <button class="companion-nudge-dismiss" data-nudge-action="dismiss">&times;</button>
   `;
   nudgeEl.classList.remove('hidden');
+
+  /* Mark meal nudge as shown for today */
+  if (isMealNudge && _mealNudge?.shownKey) {
+    localStorage.setItem(_mealNudge.shownKey, '1');
+  }
+
+  /* Mark task reminder as sent */
+  if (isTaskNudge && _currentTaskReminder?.task?.id) {
+    const taskReminder = _currentTaskReminder.task;
+    const patchBody = {};
+    if (rawType === 'task_pre') patchBody.reminder_sent_pre = true;
+    else if (rawType === 'task_due') patchBody.reminder_sent_due = true;
+    else if (rawType === 'task_progress') patchBody.last_progress_check_ts = new Date().toISOString();
+    patchBody.reminder_sent_pre = patchBody.reminder_sent_pre ?? taskReminder.reminder_sent_pre;
+    patchBody.reminder_sent_due = patchBody.reminder_sent_due ?? taskReminder.reminder_sent_due;
+    if (Object.keys(patchBody).length) {
+      fetch(`${API_BASE}/api/companion/tasks/${taskReminder.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patchBody)
+      }).catch(() => {});
+      /* Update local state */
+      const tasks = loadTasks();
+      const local = tasks.find(t => t.id === taskReminder.id);
+      if (local) {
+        Object.assign(local, patchBody);
+        saveTasks(tasks);
+      }
+    }
+  }
 
   localStorage.setItem(NUDGE_KEY, String(now));
 }
@@ -834,6 +964,7 @@ function showNudge() {
 function dismissNudge() {
   const nudgeEl = el('companion-nudge');
   if (nudgeEl) nudgeEl.classList.add('hidden');
+  _currentTaskReminder = null;
 }
 
 /* Nudge click handler */
@@ -849,7 +980,11 @@ function handleNudgeClick(e) {
   openPanel();
   if (action === 'midday') switchTab('today');
   else if (action === 'eod') switchTab('today');
-  else switchTab('checkin');
+  else if (action.startsWith('task_')) {
+    switchTab('today');
+  } else if (action === 'meal_time') {
+    /* Dismiss only, no action needed */
+  } else switchTab('checkin');
 }
 
 /* ── Task list ── */
@@ -921,15 +1056,16 @@ function renderTaskItem(task, idx) {
   html += '<span class="companion-task-edit" data-task-id="' + task.id + '" style="cursor:pointer;font-size:10px;opacity:0.3;min-height:32px;display:inline-flex;align-items:center;" title="Edit">✎</span>';
   html += '<span class="companion-task-delete" data-task-id="' + task.id + '" style="cursor:pointer;font-size:10px;opacity:0.3;min-height:32px;display:inline-flex;align-items:center;" title="Delete">✕</span>';
   html += '<span class="companion-task-priority" title="' + task.priority + '">' + priorityDot + '</span>';
-  html += '<span class="companion-task-title" ' + titleDone + ' style="flex:1;min-width:0;font-size:12px;word-break:break-word;">' + esc(task.title) + '</span>';
+  html += '<span class="companion-task-title" data-task-id="' + task.id + '" ' + titleDone + ' style="flex:1;min-width:0;font-size:12px;word-break:break-word;cursor:pointer;">' + esc(task.title) + '</span>';
   if (task.estimated_minutes) html += '<span style="font-size:10px;opacity:0.4;flex-shrink:0;">' + task.estimated_minutes + 'm</span>';
+  if (task.due_time) html += '<span style="font-size:10px;opacity:0.4;flex-shrink:0;font-family:monospace;">⏰' + esc(task.due_time) + '</span>';
   if (task.carried_over) html += '<span style="font-size:9px;opacity:0.4;flex-shrink:0;">↻</span>';
   if (idx >= 0) {
     html += '<span class="companion-task-up" data-idx="' + idx + '" style="cursor:pointer;font-size:12px;opacity:0.3;min-height:32px;display:inline-flex;align-items:center;">▲</span>';
     html += '<span class="companion-task-down" data-idx="' + idx + '" style="cursor:pointer;font-size:12px;opacity:0.3;min-height:32px;display:inline-flex;align-items:center;">▼</span>';
   }
   if (task.status !== 'done' && subSteps.length === 0) {
-    html += '<button class="companion-task-breakdown" data-task-id="' + task.id + '" style="background:none;border:none;cursor:pointer;padding:2px 4px;font-size:10px;min-height:32px;">🔧</button>';
+    html += '<button class="companion-task-breakdown" data-task-id="' + task.id + '" style="background:none;border:none;cursor:pointer;padding:2px 4px;font-size:10px;min-height:32px;" title="Break into steps">🔧</button>';
   }
   html += '</div>';
   if (subSteps.length > 0) {
@@ -962,6 +1098,7 @@ async function addTask() {
   const title = (input?.value || '').trim();
   if (!title) return;
 
+  const dueInput = el('companion-task-due');
   const task = {
     title: title.slice(0, 80),
     estimated_minutes: timeInput ? parseInt(timeInput.value, 10) || null : null,
@@ -970,8 +1107,10 @@ async function addTask() {
     date: todayKey(),
     carried_over: false,
     sub_steps: [],
-    sort_order: 0
+    sort_order: 0,
+    due_time: dueInput?.value || null
   };
+  if (dueInput) dueInput.value = '';
 
   const tasks = loadTasks();
   tasks.push(task);
@@ -1075,6 +1214,19 @@ function populateProfileForm() {
   if (tzIn) tzIn.value = p.timezone || '';
   if (sleepIn) sleepIn.value = p.idealSleepHours || 8;
 
+  const bdayIn = el('companion-profile-birthday');
+  if (bdayIn) bdayIn.value = p.birthday || '';
+  const mbtiIn = el('companion-profile-mbti');
+  if (mbtiIn) mbtiIn.value = p.mbtiType || '';
+  const enneIn = el('companion-profile-enneagram');
+  if (enneIn) enneIn.value = p.enneagramType || '';
+  const addIn = el('companion-profile-additional');
+  if (addIn) { addIn.value = p.additionalConditions || ''; updateAdditionalCounter(); }
+  const ssIn = el('companion-profile-sleep-start');
+  if (ssIn) ssIn.value = p.sleepScheduleStart || '';
+  const seIn = el('companion-profile-sleep-end');
+  if (seIn) seIn.value = p.sleepScheduleEnd || '';
+
   document.querySelectorAll('[data-companion-condition]').forEach(chk => {
     chk.checked = p.conditions.includes(chk.dataset.companionCondition);
   });
@@ -1082,6 +1234,12 @@ function populateProfileForm() {
   document.querySelectorAll('[data-companion-pattern]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.companionPattern === p.energyPattern);
   });
+}
+
+function updateAdditionalCounter() {
+  const ta = el('companion-profile-additional');
+  const counter = el('companion-profile-additional-counter');
+  if (ta && counter) counter.textContent = ta.value.length;
 }
 
 function saveProfileForm() {
@@ -1092,6 +1250,19 @@ function saveProfileForm() {
   if (nameIn) p.displayName = nameIn.value.trim();
   if (tzIn) p.timezone = tzIn.value.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone;
   if (sleepIn) p.idealSleepHours = parseFloat(sleepIn.value) || 8;
+
+  const bdayIn = el('companion-profile-birthday');
+  if (bdayIn) p.birthday = bdayIn.value || '';
+  const mbtiIn = el('companion-profile-mbti');
+  if (mbtiIn) p.mbtiType = mbtiIn.value.trim() || '';
+  const enneIn = el('companion-profile-enneagram');
+  if (enneIn) p.enneagramType = enneIn.value.trim() || '';
+  const addIn = el('companion-profile-additional');
+  if (addIn) p.additionalConditions = addIn.value.trim() || '';
+  const ssIn = el('companion-profile-sleep-start');
+  if (ssIn) p.sleepScheduleStart = ssIn.value || '';
+  const seIn = el('companion-profile-sleep-end');
+  if (seIn) p.sleepScheduleEnd = seIn.value || '';
 
   p.conditions = [];
   document.querySelectorAll('[data-companion-condition]:checked').forEach(chk => {
@@ -1107,10 +1278,11 @@ function saveProfileForm() {
 /* ── Sync from backend on load ── */
 async function syncFromBackend() {
   try {
-    const [profileRes, checkinsRes, tasksRes] = await Promise.all([
+    const [profileRes, checkinsRes, tasksRes, lifestyleRes] = await Promise.all([
       fetch(`${API_BASE}/api/companion/profile`),
       fetch(`${API_BASE}/api/companion/checkins`),
-      fetch(`${API_BASE}/api/companion/tasks?date=${todayKey()}`)
+      fetch(`${API_BASE}/api/companion/tasks?date=${todayKey()}`),
+      fetch(`${API_BASE}/api/companion/lifestyle`)
     ]);
 
     const profileData = await profileRes.json();
@@ -1121,6 +1293,12 @@ async function syncFromBackend() {
       p.conditions = profileData.conditions || [];
       p.energyPattern = profileData.energy_pattern || p.energyPattern;
       p.idealSleepHours = profileData.ideal_sleep_hours || p.idealSleepHours;
+      p.birthday = profileData.birthday || '';
+      p.mbtiType = profileData.mbti_type || '';
+      p.enneagramType = profileData.enneagram_type || '';
+      p.additionalConditions = profileData.additional_conditions || '';
+      p.sleepScheduleStart = profileData.sleep_schedule_start || '';
+      p.sleepScheduleEnd = profileData.sleep_schedule_end || '';
       saveProfile(p);
     }
 
@@ -1156,6 +1334,107 @@ async function syncFromBackend() {
     if (tasksData && tasksData.tasks) {
       saveTasks(tasksData.tasks);
     }
+
+    const lifestyleData = await lifestyleRes.json();
+    if (lifestyleData && lifestyleData.weekday_schedule) {
+      saveLifestyle({ weekday_schedule: lifestyleData.weekday_schedule, weekend_schedule: lifestyleData.weekend_schedule || [] });
+      if (document.querySelector('[data-companion-panel="lifestyle"]:not(.hidden)')) populateLifestyleForm();
+    }
+  } catch (_) {}
+}
+
+/* ── Lifestyle ── */
+let _lifestyleData = { weekday_schedule: [], weekend_schedule: [] };
+const LIFESTYLE_KEY = 'companion-lifestyle';
+
+function defaultBlock() {
+  return { id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2, 8), label: '', type: 'other', start: '', end: '' };
+}
+
+function loadLifestyle() {
+  return Storage.getJSON(LIFESTYLE_KEY, { weekday_schedule: [], weekend_schedule: [] });
+}
+
+function saveLifestyle(data) {
+  Storage.setJSON(LIFESTYLE_KEY, data);
+}
+
+function renderBlockRow(block, dayType, idx) {
+  const typeOptions = ['school','work','commute','meal','free','sleep','other'].map(t =>
+    `<option value="${t}" ${block.type === t ? 'selected' : ''}>${t.charAt(0).toUpperCase() + t.slice(1)}</option>`
+  ).join('');
+  return `<div class="companion-lifestyle-row" data-block-id="${block.id}">
+    <input type="text" class="companion-lifestyle-label companion-input" value="${esc(block.label)}" maxlength="30" placeholder="Label" data-idx="${idx}" data-day="${dayType}">
+    <select class="companion-lifestyle-type companion-input" data-idx="${idx}" data-day="${dayType}">${typeOptions}</select>
+    <input type="time" class="companion-lifestyle-start companion-input" value="${block.start}" data-idx="${idx}" data-day="${dayType}">
+    <input type="time" class="companion-lifestyle-end companion-input" value="${block.end}" data-idx="${idx}" data-day="${dayType}">
+    <button type="button" class="companion-lifestyle-remove confirm-btn" data-block-id="${block.id}">✕</button>
+  </div>`;
+}
+
+function renderLifestyleBlocks() {
+  const data = _lifestyleData;
+  const weekdayContainer = el('companion-weekday-blocks');
+  const weekendContainer = el('companion-weekend-blocks');
+  if (!weekdayContainer || !weekendContainer) return;
+
+  const emptyEl = el('companion-lifestyle-empty');
+  const hasAny = data.weekday_schedule.length > 0 || data.weekend_schedule.length > 0;
+  if (emptyEl) emptyEl.classList.toggle('hidden', hasAny);
+
+  weekdayContainer.innerHTML = data.weekday_schedule.map((b, i) => renderBlockRow(b, 'weekday', i)).join('');
+  weekendContainer.innerHTML = data.weekend_schedule.map((b, i) => renderBlockRow(b, 'weekend', i)).join('');
+}
+
+function collectLifestyleFromDOM() {
+  const data = { weekday_schedule: [], weekend_schedule: [] };
+  ['weekday', 'weekend'].forEach(dayType => {
+    const rows = document.querySelectorAll(`#companion-${dayType}-blocks .companion-lifestyle-row`);
+    rows.forEach(row => {
+      const block = {
+        id: row.dataset.blockId,
+        label: row.querySelector('.companion-lifestyle-label')?.value?.trim() || '',
+        type: row.querySelector('.companion-lifestyle-type')?.value || 'other',
+        start: row.querySelector('.companion-lifestyle-start')?.value || '',
+        end: row.querySelector('.companion-lifestyle-end')?.value || '',
+      };
+      data[`${dayType}_schedule`].push(block);
+    });
+  });
+  return data;
+}
+
+function populateLifestyleForm() {
+  _lifestyleData = loadLifestyle();
+  renderLifestyleBlocks();
+}
+
+function addLifestyleBlock(dayType) {
+  const data = _lifestyleData;
+  data[`${dayType}_schedule`].push(defaultBlock());
+  renderLifestyleBlocks();
+  saveLifestyle(data);
+}
+
+function removeLifestyleBlock(blockId) {
+  let data = collectLifestyleFromDOM();
+  data.weekday_schedule = data.weekday_schedule.filter(b => b.id !== blockId);
+  data.weekend_schedule = data.weekend_schedule.filter(b => b.id !== blockId);
+  _lifestyleData = data;
+  renderLifestyleBlocks();
+  saveLifestyle(data);
+}
+
+async function saveLifestyleToBackend() {
+  const data = collectLifestyleFromDOM();
+  _lifestyleData = data;
+  saveLifestyle(data);
+  try {
+    await fetch(`${API_BASE}/api/companion/lifestyle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
   } catch (_) {}
 }
 
@@ -1252,10 +1531,12 @@ function init() {
   syncFromBackend().then(() => {
     renderBar();
     populateProfileForm();
+    populateLifestyleForm();
   });
 
   renderBar();
   populateProfileForm();
+  populateLifestyleForm();
 
   /* Tabs */
   const panel = el('companion-panel');
@@ -1276,9 +1557,40 @@ function init() {
       saveProfileForm();
     });
   });
-  ['companion-profile-name', 'companion-profile-tz', 'companion-profile-sleep'].forEach(id => {
+  ['companion-profile-name', 'companion-profile-tz', 'companion-profile-sleep',
+    'companion-profile-birthday', 'companion-profile-mbti',
+    'companion-profile-enneagram', 'companion-profile-sleep-start',
+    'companion-profile-sleep-end'].forEach(id => {
     const inp = el(id);
     if (inp) inp.addEventListener('change', saveProfileForm);
+  });
+  const addTa = el('companion-profile-additional');
+  if (addTa) {
+    addTa.addEventListener('input', () => { updateAdditionalCounter(); saveProfileForm(); });
+  }
+
+  /* Lifestyle buttons */
+  el('companion-weekday-add')?.addEventListener('click', () => addLifestyleBlock('weekday'));
+  el('companion-weekend-add')?.addEventListener('click', () => addLifestyleBlock('weekend'));
+  el('companion-lifestyle-save')?.addEventListener('click', saveLifestyleToBackend);
+
+  /* Lifestyle block removal via delegation */
+  document.querySelector('#companion-panel .companion-panel-body')?.addEventListener('click', e => {
+    const removeBtn = e.target.closest('.companion-lifestyle-remove');
+    if (removeBtn) removeLifestyleBlock(removeBtn.dataset.blockId);
+  });
+
+  /* Auto-save lifestyle on field change (debounced) */
+  let _lsDebounce = null;
+  document.querySelector('#companion-panel .companion-panel-body')?.addEventListener('change', e => {
+    if (e.target.closest('.companion-lifestyle-label, .companion-lifestyle-type, .companion-lifestyle-start, .companion-lifestyle-end')) {
+      clearTimeout(_lsDebounce);
+      _lsDebounce = setTimeout(() => {
+        const data = collectLifestyleFromDOM();
+        _lifestyleData = data;
+        saveLifestyle(data);
+      }, 500);
+    }
   });
 
   /* Check-in submit */
@@ -1389,6 +1701,33 @@ function init() {
   setTimeout(() => showNudge(), 5000);
   setInterval(() => showNudge(), 30000);
 
+  /* ── "Noted" indicator polling (extraction toast) ── */
+  let _lastMemoryCheckTs = Date.now();
+  async function checkForNotedMemory() {
+    try {
+      const res = await fetch('/api/companion/memory/latest');
+      const data = await res.json();
+      if (data && data.fact && data.fact.id) {
+        showNotedIndicator(data.fact.content);
+      }
+    } catch (_) { /* silent */ }
+  }
+  function showNotedIndicator(content) {
+    const existing = document.getElementById('companion-noted-toast');
+    if (existing) existing.remove();
+    const toast = document.createElement('div');
+    toast.id = 'companion-noted-toast';
+    toast.textContent = '💭 Noted';
+    toast.style.cssText = 'position:fixed;bottom:70px;right:20px;background:var(--accent,var(--red));color:#fff;padding:6px 14px;border-radius:20px;font-size:13px;font-weight:500;z-index:9999;opacity:0;transition:opacity 0.3s ease;pointer-events:none;box-shadow:0 2px 12px rgba(0,0,0,0.2);';
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => { toast.style.opacity = '1'; });
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      setTimeout(() => toast.remove(), 400);
+    }, 2500);
+  }
+  setInterval(() => checkForNotedMemory(), 5000);
+
   /* Auto-carry-over EOD tasks */
   autoCarryOverTasks();
 
@@ -1403,6 +1742,21 @@ function init() {
         const detail = target.parentElement.nextElementSibling;
         if (detail) detail.classList.toggle('hidden');
         return;
+      }
+
+      /* Mark in progress on interaction */
+      if (target.matches('.companion-task-title, .companion-task-breakdown')) {
+        const taskId = target.dataset.taskId || target.closest('[data-task-id]')?.dataset.taskId;
+        if (taskId) {
+          const tasks = loadTasks();
+          const task = tasks.find(t => t.id === taskId);
+          if (task && task.status === 'todo') {
+            task.status = 'in_progress';
+            task.started_at = new Date().toISOString();
+            saveTasks(tasks);
+            await syncTaskToBackend({ id: task.id, status: 'in_progress', started_at: task.started_at });
+          }
+        }
       }
 
       /* Mark done */
@@ -1429,8 +1783,9 @@ function init() {
         if (task) {
           task.status = 'todo';
           task.completed_at = null;
+          task.started_at = null;
           saveTasks(tasks);
-          await syncTaskToBackend({ id: task.id, status: 'todo' });
+          await syncTaskToBackend({ id: task.id, status: 'todo', started_at: null });
           renderTaskList();
           renderBar();
         }
@@ -1483,8 +1838,9 @@ function init() {
               titleSpan.textContent = newTitle || currentTitle;
             } else if (ev.key === 'Escape') {
               titleSpan.textContent = currentTitle;
-            }
-          });
+    }
+  });
+
           inp.addEventListener('blur', () => {
             titleSpan.textContent = inp.value.trim() || currentTitle;
           });

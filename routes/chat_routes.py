@@ -414,7 +414,7 @@ def setup_chat_routes(
             sess, session_manager, session, message, reply, None,
             ctx.uprefs, memory_manager, memory_vector, webhook_manager,
             character_name=ctx.preset.character_name,
-            owner=ctx.user,
+            owner=getattr(request.state, 'api_token_owner', None) or ctx.user,
             allow_background_extraction=not tool_policy.block_all_tool_calls,
         )
 
@@ -1078,7 +1078,7 @@ def setup_chat_routes(
                                     last_metrics, ctx.uprefs, memory_manager, memory_vector, webhook_manager,
                                     incognito=incognito, compare_mode=compare_mode,
                                     character_name=ctx.preset.character_name,
-                                    owner=_user,
+                                    owner=getattr(request.state, 'api_token_owner', None) or _user,
                                     allow_background_extraction=not tool_policy.block_all_tool_calls,
                                 )
                             _stream_set(session, status="done")
@@ -1209,7 +1209,7 @@ def setup_chat_routes(
                                                             agent_rounds=_agent_rounds,
                                     agent_tool_calls=_agent_tool_calls,
                                     skills_manager=skills_manager,
-                                    owner=_user,
+                                    owner=getattr(request.state, 'api_token_owner', None) or _user,
                                     extract_skills=user_requested_agent,
                                     allow_background_extraction=not tool_policy.block_all_tool_calls,
                                 )

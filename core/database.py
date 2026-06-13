@@ -690,6 +690,14 @@ class CompanionProfile(TimestampMixin, Base):
     energy_pattern = Column(String, default="Variable")
     ideal_sleep_hours = Column(Integer, default=8)
 
+    # Stage 5 — Expanded profile
+    birthday = Column(String, nullable=True)             # "YYYY-MM-DD"
+    mbti_type = Column(String(4), nullable=True)         # e.g. "INTP"
+    enneagram_type = Column(String(5), nullable=True)    # e.g. "5w4"
+    additional_conditions = Column(String(300), nullable=True)  # free-form
+    sleep_schedule_start = Column(String(5), nullable=True)     # "HH:MM"
+    sleep_schedule_end = Column(String(5), nullable=True)       # "HH:MM"
+
 
 class CompanionCheckin(TimestampMixin, Base):
     """Daily check-in entry for the companion system."""
@@ -734,9 +742,27 @@ class CompanionTask(TimestampMixin, Base):
     sub_steps = Column(Text, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
+    # Stage 5 — Time-aware tasks
+    due_time = Column(String(5), nullable=True)                # "HH:MM"
+    reminder_sent_pre = Column(Boolean, default=False)
+    reminder_sent_due = Column(Boolean, default=False)
+    last_progress_check_ts = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+
     __table_args__ = (
         Index('ix_companion_tasks_date_owner', 'date', 'owner'),
     )
+
+
+class CompanionLifestyle(TimestampMixin, Base):
+    """Typical weekday/weekend schedule blocks."""
+    __tablename__ = "companion_lifestyles"
+
+    id = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=True, index=True)
+    weekday_schedule = Column(Text, nullable=True)   # JSON array of blocks
+    weekend_schedule = Column(Text, nullable=True)   # JSON array of blocks
+
 
 
 def _migrate_add_last_message_at_column():
@@ -1820,6 +1846,57 @@ def _migrate_add_companion_stage3_columns():
             pass
 
 
+def _migrate_add_companion_stage5_columns():
+    """Add Stage 5 columns to companion_profiles and companion_tasks."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+
+        # Profile columns
+        cursor = conn.execute("PRAGMA table_info(companion_profiles)")
+        profile_cols = [row[1] for row in cursor.fetchall()]
+        profile_additions = [
+            ("birthday", "TEXT"),
+            ("mbti_type", "TEXT"),
+            ("enneagram_type", "TEXT"),
+            ("additional_conditions", "TEXT"),
+            ("sleep_schedule_start", "TEXT"),
+            ("sleep_schedule_end", "TEXT"),
+        ]
+        for col_name, col_type in profile_additions:
+            if col_name not in profile_cols:
+                conn.execute(f"ALTER TABLE companion_profiles ADD COLUMN {col_name} {col_type}")
+                logging.getLogger(__name__).info(f"Migrated: added '{col_name}' to companion_profiles")
+
+        # Task columns
+        cursor = conn.execute("PRAGMA table_info(companion_tasks)")
+        task_cols = [row[1] for row in cursor.fetchall()]
+        task_additions = [
+            ("due_time", "TEXT"),
+            ("reminder_sent_pre", "BOOLEAN DEFAULT 0"),
+            ("reminder_sent_due", "BOOLEAN DEFAULT 0"),
+            ("last_progress_check_ts", "DATETIME"),
+            ("started_at", "DATETIME"),
+        ]
+        for col_name, col_type in task_additions:
+            if col_name not in task_cols:
+                conn.execute(f"ALTER TABLE companion_tasks ADD COLUMN {col_name} {col_type}")
+                logging.getLogger(__name__).info(f"Migrated: added '{col_name}' to companion_tasks")
+
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"companion stage 5 migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def init_db():
     """
     Initialize the database by creating all tables.
@@ -1828,6 +1905,7 @@ def init_db():
     _migrate_model_endpoints()
     Base.metadata.create_all(bind=engine)
     _migrate_add_companion_stage3_columns()
+    _migrate_add_companion_stage5_columns()
     _migrate_add_hidden_models_column()
     _migrate_add_cached_models_column()
     _migrate_add_pinned_models_column()
@@ -1870,6 +1948,42 @@ def init_db():
     _migrate_encrypt_signatures()
     _migrate_encrypt_endpoint_keys()
     _migrate_backfill_task_folders()
+    _migrate_create_companion_lifestyle_table()
+
+
+def _migrate_create_companion_lifestyle_table():
+    """Create companion_lifestyles table if not present (Stage 6)."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(companion_lifestyles)")
+        existing = [row[1] for row in cursor.fetchall()]
+        if not existing:
+            conn.execute("""
+                CREATE TABLE companion_lifestyles (
+                    id VARCHAR NOT NULL,
+                    owner VARCHAR,
+                    weekday_schedule TEXT,
+                    weekend_schedule TEXT,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    PRIMARY KEY (id)
+                )
+            """)
+            conn.execute("CREATE INDEX ix_companion_lifestyles_owner ON companion_lifestyles (owner)")
+            logging.getLogger(__name__).info("Migrated: created companion_lifestyles table")
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"companion lifestyle table creation failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _migrate_backfill_task_folders():
