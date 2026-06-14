@@ -1040,9 +1040,102 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       let metrics = null;
       let isThinking = false;
       let thinkingStartTime = null;
-      // Streaming TTS: synthesize sentence-by-sentence during streaming
-      const streamingTTS = !!(window.aiTTSManager && window.aiTTSManager.autoPlay && window.aiTTSManager.available);
-      if (streamingTTS) window.aiTTSManager.streamingStart();
+      // Sentence-chunked TTS pipeline: play first sentence while rest streams
+      const ttsChunks = [];
+      let ttsSynthesizing = false;
+      let ttsCurrentAudio = null;
+      let ttsPlainBuffer = '';
+      let ttsSentChars = 0;
+      const TTS_MIN_CHUNK = 80;
+
+      function _stripForTTS(raw) {
+        return raw
+          .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
+          .replace(/```[\s\S]*?```/g, '')
+          .replace(/<[^>]+>/g, '');
+      }
+
+      function _feedTTSChunk(delta) {
+        var plain = _stripForTTS(delta);
+        if (!plain) return;
+        ttsPlainBuffer += plain;
+        var pending = ttsPlainBuffer.substring(ttsSentChars);
+        if (pending.length < TTS_MIN_CHUNK) return;
+        for (var i = 0; i < pending.length - 1; i++) {
+          var ch = pending[i];
+          var next = pending[i + 1];
+          if ((ch === '.' || ch === '!' || ch === '?') && (next === ' ' || next === '\n' || next === '\r')) {
+            var chunk = pending.substring(0, i + 1).trim();
+            if (chunk.length >= TTS_MIN_CHUNK) {
+              ttsSentChars += i + 2;
+              ttsChunks.push(chunk);
+              _processTTSQueue();
+            }
+            return;
+          }
+        }
+      }
+
+      function _flushTTSBuffer() {
+        var pending = ttsPlainBuffer.substring(ttsSentChars).trim();
+        if (pending.length < 1) return;
+        ttsChunks.push(pending);
+        ttsSentChars = ttsPlainBuffer.length;
+        _processTTSQueue();
+      }
+
+      function _processTTSQueue() {
+        if (ttsSynthesizing || ttsChunks.length === 0) return;
+        ttsSynthesizing = true;
+        var chunk = ttsChunks.shift();
+        fetch('/api/tts/synthesize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: chunk, format: 'audio' })
+        })
+        .then(function(r) {
+          if (!r.ok) throw new Error('TTS failed');
+          return r.blob();
+        })
+        .then(function(blob) {
+          var url = URL.createObjectURL(blob);
+          var audio = new Audio(url);
+          ttsCurrentAudio = audio;
+          audio.onended = function() {
+            ttsSynthesizing = false;
+            ttsCurrentAudio = null;
+            URL.revokeObjectURL(url);
+            _processTTSQueue();
+          };
+          audio.onerror = function() {
+            ttsSynthesizing = false;
+            ttsCurrentAudio = null;
+            URL.revokeObjectURL(url);
+            _processTTSQueue();
+          };
+          audio.play().catch(function() {
+            ttsSynthesizing = false;
+            ttsCurrentAudio = null;
+            _processTTSQueue();
+          });
+        })
+        .catch(function() {
+          ttsSynthesizing = false;
+          _processTTSQueue();
+        });
+      }
+
+      function _stopTTS() {
+        ttsChunks.length = 0;
+        ttsSynthesizing = false;
+        ttsPlainBuffer = '';
+        ttsSentChars = 0;
+        if (ttsCurrentAudio) {
+          ttsCurrentAudio.pause();
+          ttsCurrentAudio.currentTime = 0;
+          ttsCurrentAudio = null;
+        }
+      }
       // Multi-bubble agent tracking
       let roundHolder = holder;       // Current AI text bubble (changes per round)
       let roundText = '';             // Text accumulated for current round
@@ -1638,8 +1731,10 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                   if (spinner && spinner.element) spinner.destroy();
                   _renderStream();
                   _scheduleThinkingSpinner();
-                  // Feed streaming TTS with accumulated text
-                  if (streamingTTS) window.aiTTSManager.streamingUpdate(roundText);
+                  // Feed TTS chunking pipeline with new text
+                  if (window.aiTTSManager && window.aiTTSManager.autoPlay && window.aiTTSManager.available) {
+                    _feedTTSChunk(_delta);
+                  }
                 }
               } else if (json.type === 'research_progress') {
                 if (_isBg) continue; // Skip DOM updates in background
@@ -2468,7 +2563,6 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
                   newBody.appendChild(spinner.createElement());
                   spinner.start();
                 }
-                if (streamingTTS) window.aiTTSManager._streamSentencesSent = 0;
                 uiModule.scrollHistory();
               } else if (json.type === 'budget_exceeded') {
                 if (_isBg) continue;
@@ -2735,34 +2829,9 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         if (addAITTSButton && accumulated && window.aiTTSManager?._provider !== 'disabled' && window.aiTTSManager?.available) {
           addAITTSButton(footerTarget, accumulated);
         }
-        // TTS auto-play: streaming mode flushes remaining text, non-streaming enqueues full message
-        if (accumulated && window.aiTTSManager && window.aiTTSManager.autoPlay) {
-          const ttsBtn = holder.querySelector('.ai-tts-button');
-          if (ttsBtn) {
-            var ICON_PLAY_TTS = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
-            var ICON_STOP_TTS = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>';
-            const resetFn = () => {
-              ttsBtn.innerHTML = ICON_PLAY_TTS;
-              ttsBtn.classList.remove('playing', 'loading');
-              ttsBtn.style.color = '#6b7280';
-              ttsBtn.title = 'Read aloud';
-            };
-            if (streamingTTS) {
-              // Flush remaining partial sentence and attach the real button
-              window.aiTTSManager.streamingEnd(accumulated);
-              window.aiTTSManager.streamingAttachButton(ttsBtn, resetFn);
-              // If still playing sentences from the stream, show stop icon
-              if (window.aiTTSManager.isPlaying || window.aiTTSManager._processing) {
-                ttsBtn.innerHTML = ICON_STOP_TTS;
-                ttsBtn.classList.add('playing');
-                ttsBtn.style.color = '#ccc';
-                ttsBtn.title = 'Stop';
-              }
-            } else {
-              // Non-streaming fallback (autoPlay toggled mid-stream, etc.)
-              window.aiTTSManager.enqueue(accumulated, ttsBtn, resetFn);
-            }
-          }
+        // TTS auto-play: flush remaining buffer as final chunk
+        if (window.aiTTSManager && window.aiTTSManager.autoPlay) {
+          _flushTTSBuffer();
         }
         if (metrics) {
           displayMetrics(footerTarget, metrics);
@@ -2835,8 +2904,8 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
           }
         }
       } else {
-        // Stop streaming TTS on any error/abort
-        if (streamingTTS && window.aiTTSManager) window.aiTTSManager.stop();
+        // Stop TTS pipeline on any error/abort
+        _stopTTS();
 
         if (currentAbort && currentAbort.signal.aborted) {
           const abortReason = currentAbort._reason || '';

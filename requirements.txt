@@ -43,6 +43,9 @@ qrcode[pil]
 croniter
 pytest
 pytest-asyncio
+# CPU-friendly TTS via kokoro-onnx (replaces GPU kokoro).
+# Models downloaded to ~/.cache on first use.
+kokoro-onnx
 # starlette.testclient prefers httpx2 since Starlette 1.2.0 and warns on every
 # TestClient import when only classic httpx is present. Runtime code keeps
 # using `httpx` above; this is test-client only.

@@ -39,7 +39,10 @@ class AITTSManager {
                     this._provider = 'disabled';
                     return;
                 }
-            } catch {}
+                this.autoPlay = !!settings.tts_auto_play;
+            } catch {
+                this.autoPlay = false;
+            }
 
             const response = await fetch('/api/tts/stats');
             const stats = await response.json();

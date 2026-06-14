@@ -821,6 +821,8 @@ async function initTtsSettings() {
   var speedRow = el('set-ttsSpeedRow');
   var ttsMsg = el('set-ttsSettingsMsg');
   var ttsEnabledToggle = el('set-ttsEnabledToggle');
+  var ttsAutoPlayToggle = el('set-ttsAutoPlayToggle');
+  var ttsOpenAIKey = el('set-ttsOpenAIKey');
   var ttsConfigWrap = provSel ? provSel.closest('div[style*="flex-direction"]') : null;
 
   function isEndpoint() { return provSel.value.startsWith('endpoint:'); }
@@ -861,6 +863,8 @@ async function initTtsSettings() {
     if (settings.tts_voice) { voiceSelect.value = settings.tts_voice; voiceInput.value = settings.tts_voice; }
     if (settings.tts_speed) { speedSelect.value = settings.tts_speed; }
     if (ttsEnabledToggle) ttsEnabledToggle.checked = settings.tts_enabled !== false;
+    if (ttsAutoPlayToggle) ttsAutoPlayToggle.checked = !!settings.tts_auto_play;
+    if (ttsOpenAIKey) ttsOpenAIKey.value = settings.openai_api_key || '';
   } catch (e) { console.warn('Failed to load TTS settings', e); }
 
   function syncTtsDisabled() {
@@ -875,7 +879,7 @@ async function initTtsSettings() {
   async function saveTTS() {
     try {
       await fetch('/api/auth/settings', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tts_enabled: ttsEnabledToggle ? ttsEnabledToggle.checked : true, tts_provider: provSel.value, tts_model: getModel() || 'tts-1', tts_voice: getVoice() || 'alloy', tts_speed: speedSelect.value || '1' }) });
+        body: JSON.stringify({ tts_enabled: ttsEnabledToggle ? ttsEnabledToggle.checked : true, tts_provider: provSel.value, tts_model: getModel() || 'tts-1', tts_voice: getVoice() || 'alloy', tts_speed: speedSelect.value || '1', tts_auto_play: !!(ttsAutoPlayToggle && ttsAutoPlayToggle.checked), openai_api_key: ttsOpenAIKey ? ttsOpenAIKey.value : '' }) });
       ttsMsg.textContent = 'Saved'; ttsMsg.style.color = 'var(--fg)'; setTimeout(() => { ttsMsg.textContent = ''; }, 2000);
       if (window.aiTTSManager) window.aiTTSManager.checkAvailability();
     } catch (e) { ttsMsg.textContent = 'Failed to save'; ttsMsg.style.color = 'var(--red)'; }
@@ -900,6 +904,8 @@ async function initTtsSettings() {
   voiceInput.addEventListener('change', saveTTS);
   speedSelect.addEventListener('change', saveAndClearCache);
   if (ttsEnabledToggle) ttsEnabledToggle.addEventListener('change', function() { syncTtsDisabled(); saveTTS(); });
+  if (ttsAutoPlayToggle) ttsAutoPlayToggle.addEventListener('change', saveTTS);
+  if (ttsOpenAIKey) ttsOpenAIKey.addEventListener('change', saveTTS);
 
   // Preview / test button
   var previewBtn = el('set-ttsPreviewBtn');
