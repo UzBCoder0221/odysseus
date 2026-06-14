@@ -1045,7 +1045,6 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       let ttsSynthesizing = false;
       let ttsCurrentAudio = null;
       let ttsPlainBuffer = '';
-      let ttsSentChars = 0;
       const TTS_MIN_CHUNK = 80;
 
       function _stripForTTS(raw) {
@@ -1056,31 +1055,32 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       }
 
       function _feedTTSChunk(delta) {
+        if (!delta) return;
         var plain = _stripForTTS(delta);
         if (!plain) return;
         ttsPlainBuffer += plain;
-        var pending = ttsPlainBuffer.substring(ttsSentChars);
-        if (pending.length < TTS_MIN_CHUNK) return;
-        for (var i = 0; i < pending.length - 1; i++) {
-          var ch = pending[i];
-          var next = pending[i + 1];
-          if ((ch === '.' || ch === '!' || ch === '?') && (next === ' ' || next === '\n' || next === '\r')) {
-            var chunk = pending.substring(0, i + 1).trim();
-            if (chunk.length >= TTS_MIN_CHUNK) {
-              ttsSentChars += i + 2;
-              ttsChunks.push(chunk);
-              _processTTSQueue();
-            }
-            return;
-          }
+        if (ttsPlainBuffer.length < TTS_MIN_CHUNK) return;
+        var boundaryRegex = /[.!?][\s\n]/g;
+        var lastMatch = null;
+        var match;
+        while ((match = boundaryRegex.exec(ttsPlainBuffer)) !== null) {
+          lastMatch = match;
+        }
+        if (!lastMatch) return;
+        var cutAt = lastMatch.index + 1;
+        var chunk = ttsPlainBuffer.slice(0, cutAt).trim();
+        ttsPlainBuffer = ttsPlainBuffer.slice(cutAt).trimStart();
+        if (chunk.length > 0) {
+          ttsChunks.push(chunk);
+          _processTTSQueue();
         }
       }
 
       function _flushTTSBuffer() {
-        var pending = ttsPlainBuffer.substring(ttsSentChars).trim();
+        var pending = ttsPlainBuffer.trim();
         if (pending.length < 1) return;
         ttsChunks.push(pending);
-        ttsSentChars = ttsPlainBuffer.length;
+        ttsPlainBuffer = '';
         _processTTSQueue();
       }
 
@@ -1129,7 +1129,6 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         ttsChunks.length = 0;
         ttsSynthesizing = false;
         ttsPlainBuffer = '';
-        ttsSentChars = 0;
         if (ttsCurrentAudio) {
           ttsCurrentAudio.pause();
           ttsCurrentAudio.currentTime = 0;
@@ -1726,6 +1725,10 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
 
                   // Render any reply text that arrived with the closing </think> token
                   _renderStream();
+                  // Feed reply text after </think> to TTS pipeline
+                  if (window.aiTTSManager && window.aiTTSManager.autoPlay && window.aiTTSManager.available) {
+                    _feedTTSChunk(_delta);
+                  }
                 } else {
                   // Normal streaming
                   if (spinner && spinner.element) spinner.destroy();
