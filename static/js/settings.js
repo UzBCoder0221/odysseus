@@ -825,21 +825,107 @@ async function initTtsSettings() {
   var ttsOpenAIKey = el('set-ttsOpenAIKey');
   var ttsConfigWrap = provSel ? provSel.closest('div[style*="flex-direction"]') : null;
 
+  var voiceMemory = {};
+
   function isEndpoint() { return provSel.value.startsWith('endpoint:'); }
   function getModel() { return isEndpoint() ? modelSelect.value : modelInput.value; }
-  function getVoice() { return isEndpoint() ? voiceSelect.value : voiceInput.value; }
+
+  // Cached voice lists fetched from backend
+  var voiceListCache = {};
+
+  async function fetchVoiceList(prov) {
+    if (prov === 'disabled' || prov === 'browser') return [];
+    var ep = prov.startsWith('endpoint:') ? 'endpoint' : prov;
+    if (voiceListCache[ep]) return voiceListCache[ep];
+    try {
+      var r = await fetch('/api/tts/voices?provider=' + encodeURIComponent(prov), { credentials: 'same-origin' });
+      if (!r.ok) return [];
+      var list = await r.json();
+      voiceListCache[ep] = list;
+      return list;
+    } catch (e) { return []; }
+  }
+
+  function getBrowserVoices() {
+    if (!('speechSynthesis' in window)) return [];
+    return (window.speechSynthesis.getVoices() || []).map(function(v) {
+      return { value: v.name, label: v.name + ' (' + v.lang + ')' };
+    });
+  }
+
+  function getVoice() {
+    // If voice input is visible (custom mode), use it; otherwise use select
+    if (voiceInput.style.display !== 'none') return voiceInput.value;
+    return voiceSelect.value;
+  }
+
+  function showCustomVoice(val) {
+    if (val === '__custom__') {
+      voiceSelect.style.display = 'none';
+      voiceInput.style.display = '';
+      voiceInput.value = voiceMemory[provSel.value] || '';
+      return true;
+    }
+    return false;
+  }
+
+  async function populateVoiceOptions(prov) {
+    voiceSelect.innerHTML = '<option value="">Loading...</option>';
+    voiceSelect.style.display = '';
+    voiceInput.style.display = 'none';
+
+    var voices = [];
+    if (prov === 'browser') {
+      voices = getBrowserVoices();
+      if (voices.length === 0) {
+        // speechSynthesis might not be ready yet; try again after a short delay
+        await new Promise(function(r) { setTimeout(r, 300); });
+        voices = getBrowserVoices();
+      }
+    } else if (prov === 'local' || prov === 'edge' || prov === 'endpoint' || isEndpoint()) {
+      var ep = isEndpoint() ? 'endpoint' : prov;
+      voices = await fetchVoiceList(prov);
+    }
+
+    voiceSelect.innerHTML = '';
+    voices.forEach(function(v) {
+      var opt = document.createElement('option');
+      opt.value = v.value; opt.textContent = v.label || v.value;
+      voiceSelect.appendChild(opt);
+    });
+    // Add "Custom..." option at bottom
+    var customOpt = document.createElement('option');
+    customOpt.value = '__custom__';
+    customOpt.textContent = 'Custom...';
+    voiceSelect.appendChild(customOpt);
+
+    // Restore saved voice or set default
+    var saved = voiceMemory[prov];
+    if (saved && voices.some(function(v) { return v.value === saved; })) {
+      voiceSelect.value = saved;
+    } else if (saved) {
+      // Saved voice is not in the list → it's a custom voice
+      voiceSelect.value = '__custom__';
+      voiceInput.value = saved;
+      voiceSelect.style.display = 'none';
+      voiceInput.style.display = '';
+    } else if (voices.length > 0) {
+      voiceSelect.value = voices[0].value;
+    }
+  }
 
   function updateVisibility() {
     var prov = provSel.value;
-    modelRow.style.display = prov.startsWith('endpoint:') ? 'flex' : 'none';
+    var isEp = isEndpoint();
+    modelRow.style.display = isEp ? 'flex' : 'none';
     voiceRow.style.display = prov === 'disabled' ? 'none' : 'flex';
     speedRow.style.display = prov === 'disabled' ? 'none' : 'flex';
-    if (isEndpoint()) {
+    if (isEp) {
       modelSelect.style.display = ''; modelInput.style.display = 'none';
       voiceSelect.style.display = ''; voiceInput.style.display = 'none';
     } else {
       modelSelect.style.display = 'none'; modelInput.style.display = '';
-      voiceSelect.style.display = 'none'; voiceInput.style.display = prov === 'disabled' ? 'none' : '';
+      // voiceSelect/voiceInput visibility handled by populateVoiceOptions / showCustomVoice
     }
   }
 
@@ -874,7 +960,16 @@ async function initTtsSettings() {
     if (ttsConfigWrap) ttsConfigWrap.style.pointerEvents = off ? 'none' : '';
   }
   syncTtsDisabled();
-  updateVisibility();
+
+  // Initial population of voice options
+  (async function initVoices() {
+    var prov = provSel.value;
+    if (prov !== 'disabled') {
+      voiceMemory[prov] = voiceInput.value || voiceSelect.value || undefined;
+      await populateVoiceOptions(prov);
+    }
+    updateVisibility();
+  })();
 
   async function saveTTS() {
     try {
@@ -890,18 +985,36 @@ async function initTtsSettings() {
     fetch('/api/tts/clear-cache', { method: 'POST', credentials: 'same-origin' }).catch(function(){});
   }
 
-  provSel.addEventListener('change', function() {
+  provSel.addEventListener('change', async function() {
+    var prevProv = provSel._prevValue || '';
+    if (prevProv) voiceMemory[prevProv] = getVoice();
+
     var prov = provSel.value;
-    if (prov === 'local') voiceInput.value = 'af_heart';
-    else if (isEndpoint()) { voiceSelect.value = 'alloy'; modelSelect.value = 'tts-1'; }
-    else if (prov === 'browser') { voiceInput.value = ''; voiceInput.placeholder = 'OS default voice'; }
+    provSel._prevValue = prov;
+
+    if (prov !== 'disabled') {
+      await populateVoiceOptions(prov);
+    }
     updateVisibility();
     saveTTS();
   });
-  modelSelect.addEventListener('change', saveAndClearCache);
+  modelSelect.addEventListener('change', function() {
+    if (isEndpoint()) voiceMemory.endpointModel = modelSelect.value;
+    saveAndClearCache();
+  });
   modelInput.addEventListener('change', saveTTS);
-  voiceSelect.addEventListener('change', saveAndClearCache);
-  voiceInput.addEventListener('change', saveTTS);
+
+  voiceSelect.addEventListener('change', function() {
+    if (showCustomVoice(voiceSelect.value)) return; // handled by showCustomVoice
+    var prov = provSel.value;
+    voiceMemory[prov] = voiceSelect.value;
+    saveAndClearCache();
+  });
+
+  voiceInput.addEventListener('change', function() {
+    voiceMemory[provSel.value] = voiceInput.value;
+    saveTTS();
+  });
   speedSelect.addEventListener('change', saveAndClearCache);
   if (ttsEnabledToggle) ttsEnabledToggle.addEventListener('change', function() { syncTtsDisabled(); saveTTS(); });
   if (ttsAutoPlayToggle) ttsAutoPlayToggle.addEventListener('change', saveTTS);

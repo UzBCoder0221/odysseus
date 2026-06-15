@@ -1059,7 +1059,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       }
 
       async function _synthesizeText(text) {
-        console.log('[TTS] synth start:', text.slice(0, 40));
+        // console.log('[TTS] synth start:', text.slice(0, 40));
         try {
           var r = await fetch('/api/tts/synthesize', {
             method: 'POST',
@@ -1068,13 +1068,13 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
           });
           if (!r.ok) return null;
           var blob = await r.blob();
-          console.log('[TTS] synth done:', blob.size, 'bytes');
+          // console.log('[TTS] synth done:', blob.size, 'bytes');
           return blob;
         } catch (e) { return null; }
       }
 
       function _playNext() {
-        console.log('[TTS] playing, audioQueue remaining:', ttsAudioQueue.length);
+        // console.log('[TTS] playing, audioQueue remaining:', ttsAudioQueue.length);
         if (ttsAudioQueue.length === 0) {
           ttsPlaying = false;
           return;
@@ -1096,8 +1096,8 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
           _playNext();
         };
         audio.play();
-        // Phase 1 lookahead: synthesize next chunk while this one plays
-        if (!ttsStreamDone && ttsTextQueue.length > 0 && !ttsSynthesizing) {
+        // Lookahead: synthesize next chunk while this one plays
+        if (ttsTextQueue.length > 0 && !ttsSynthesizing) {
           _synthesizeNext();
         }
       }
@@ -1109,6 +1109,8 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         var blob = await _synthesizeText(text);
         ttsAudioQueue.push(blob);
         ttsSynthesizing = false;
+        // Chain: immediately start next chunk while this one gets added to audio queue
+        if (ttsTextQueue.length > 0) _synthesizeNext();
         if (!ttsPlaying && ttsAudioQueue.length > 0) _playNext();
       }
 
@@ -1130,7 +1132,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         ttsPlainBuffer = ttsPlainBuffer.slice(cutAt).trimStart();
         if (chunk.length > 0) {
           ttsTextQueue.push(chunk);
-          if (!ttsSynthesizing) _synthesizeNext();
+          _synthesizeNext();
         }
       }
 
@@ -1142,15 +1144,10 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
           ttsPlainBuffer = '';
         }
         if (ttsTextQueue.length === 0 && ttsAudioQueue.length === 0) return;
-        // Phase 2: parallel-synthesize all remaining text chunks
-        var remaining = ttsTextQueue.slice();
-        ttsTextQueue = [];
-        console.log('[TTS] stream done, parallel synth of', remaining.length, 'chunks');
-        Promise.all(remaining.map(function(t) { return _synthesizeText(t); }))
-          .then(function(blobs) {
-            blobs.forEach(function(b) { ttsAudioQueue.push(b); });
-            if (!ttsPlaying) _playNext();
-          });
+        // Phase 2: synthesize remaining chunks sequentially via _synthesizeNext chain
+        if (ttsTextQueue.length > 0 && !ttsSynthesizing) {
+          _synthesizeNext();
+        }
       }
 
       function _stopTTS() {

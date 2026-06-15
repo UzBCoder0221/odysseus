@@ -1,6 +1,7 @@
 # src/tts_service.py
-"""Multi-provider TTS service — dispatches to local Kokoro, OpenAI-compatible API, or browser."""
+"""Multi-provider TTS service — dispatches to local Kokoro, Edge TTS, OpenAI-compatible API, or browser."""
 
+import asyncio
 import io
 import re
 import wave
@@ -78,6 +79,77 @@ def preprocess_for_tts(text: str) -> str:
     return text
 
 
+# ── Edge TTS (Microsoft, free/cloud) ──
+
+async def synthesize_edge(text: str, voice: str = "en-US-AriaNeural", speed: float = 1.0) -> bytes:
+    """
+    Edge TTS via the edge-tts library. Returns MP3 bytes.
+    Voice: full Edge voice name e.g. 'en-US-AriaNeural'
+    Speed: 0.5-2.0 → Edge rate string ('+0%', '+50%', '-25%')
+    """
+    import edge_tts
+    rate_pct = int((speed - 1.0) * 100)
+    rate_str = f"+{rate_pct}%" if rate_pct >= 0 else f"{rate_pct}%"
+    mp3_bytes = b""
+    communicate = edge_tts.Communicate(text, voice=voice, rate=rate_str)
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            mp3_bytes += chunk["data"]
+    if not mp3_bytes:
+        raise RuntimeError("Edge TTS returned empty audio")
+    return mp3_bytes
+
+
+KOKORO_VOICES = [
+    ("af_heart",    "Heart (US female, warm)"),
+    ("af_bella",    "Bella (US female, cheerful)"),
+    ("af_nicole",   "Nicole (US female, soothing)"),
+    ("af_sarah",    "Sarah (US female, friendly)"),
+    ("af_sky",      "Sky (US female, calm)"),
+    ("am_adam",     "Adam (US male, confident)"),
+    ("am_michael",  "Michael (US male, warm)"),
+    ("am_george",   "George (US male, narrative)"),
+    ("bf_emma",     "Emma (GB female, elegant)"),
+    ("bf_isabella", "Isabella (GB female, soft)"),
+    ("bm_george",   "George (GB male, refined)"),
+    ("bm_lewis",    "Lewis (GB male, gentle)"),
+    ("af_allay",    "Allay (US female, gentle)"),
+    ("af_aoede",    "Aoede (US female, expressive)"),
+    ("af_kore",     "Kore (US female, bright)"),
+    ("af_nova",     "Nova (US female, clear)"),
+    ("af_jadzia",   "Jadzia (US female, melodic)"),
+    ("af_messi",    "Messi (US female, energetic)"),
+    ("am_fenrir",   "Fenrir (US male, deep)"),
+    ("am_liam",     "Liam (US male, smooth)"),
+    ("am_onyx",     "Onyx (US male, rich)"),
+    ("am_puck",     "Puck (US male, playful)"),
+    ("am_echo",     "Echo (US male, resonant)"),
+    ("am_gwyn",     "Gwyn (US male, soft)"),
+    ("am_leo",      "Leo (US male, natural)"),
+]
+
+EDGE_VOICES = [
+    ("en-US-AriaNeural",    "Aria (US female, warm)"),
+    ("en-US-GuyNeural",     "Guy (US male, natural)"),
+    ("en-US-JennyNeural",   "Jenny (US female, friendly)"),
+    ("en-GB-SoniaNeural",   "Sonia (GB female)"),
+    ("en-GB-RyanNeural",    "Ryan (GB male)"),
+    ("en-AU-NatashaNeural", "Natasha (AU female)"),
+]
+
+OPENAI_VOICES = [
+    ("alloy",   "Alloy (neutral)"),
+    ("ash",     "Ash (neutral)"),
+    ("coral",   "Coral (neutral)"),
+    ("echo",    "Echo (male)"),
+    ("fable",   "Fable (British female)"),
+    ("nova",    "Nova (female)"),
+    ("onyx",    "Onyx (male)"),
+    ("sage",    "Sage (female)"),
+    ("shimmer", "Shimmer (female)"),
+]
+
+
 class TTSService:
     """Multi-provider TTS service.
 
@@ -85,7 +157,8 @@ class TTSService:
     Providers:
       "disabled"        — no TTS
       "browser"         — client-side Web Speech API (no server synthesis)
-      "local"           — Kokoro-82M on GPU
+      "edge"            — Microsoft Edge TTS (free, cloud, MP3)
+      "local"           — Kokoro-82M on CPU
       "endpoint:<id>"   — OpenAI-compatible /audio/speech via ModelEndpoint
     """
 
@@ -122,7 +195,7 @@ class TTSService:
         if provider == "local":
             kokoro = self._get_kokoro()
             return kokoro is not None and kokoro.available
-        if provider.startswith("endpoint:"):
+        if provider in ("edge",) or provider.startswith("endpoint:"):
             return True  # assume reachable; errors surface at synthesis time
         return False
 
@@ -223,14 +296,17 @@ class TTSService:
 
     # ── Public interface ──
 
-    def synthesize(self, text: str, use_cache: bool = True) -> Optional[bytes]:
+    def synthesize(self, text: str, use_cache: bool = True,
+                   provider: Optional[str] = None,
+                   voice: Optional[str] = None,
+                   speed: Optional[float] = None) -> Optional[bytes]:
         settings = self._load_settings()
         if settings.get("tts_enabled") is False:
             return None
-        provider = settings["tts_provider"]
+        provider = provider or settings["tts_provider"]
         model = settings["tts_model"]
-        voice = settings["tts_voice"]
-        speed = _safe_speed(settings.get("tts_speed", "1"))
+        voice = voice or settings["tts_voice"]
+        speed = speed or _safe_speed(settings.get("tts_speed", "1"))
 
         if provider in ("disabled", "browser"):
             return None
@@ -246,7 +322,17 @@ class TTSService:
 
         audio_data = None
 
-        if provider == "local":
+        if provider == "edge":
+            try:
+                audio_data = asyncio.run(synthesize_edge(text, voice, speed))
+            except Exception as e:
+                logger.warning(f"Edge TTS failed ({e}), falling back to local")
+                kokoro = self._get_kokoro()
+                if kokoro and kokoro.available:
+                    audio_data = kokoro.synthesize_raw(text, voice)
+                if not audio_data:
+                    audio_data = self._synthesize_openai(text, voice, speed)
+        elif provider == "local":
             kokoro = self._get_kokoro()
             if kokoro and kokoro.available:
                 audio_data = kokoro.synthesize_raw(text, voice)
@@ -268,12 +354,28 @@ class TTSService:
 
         return audio_data
 
-    def synthesize_to_base64(self, text: str) -> Optional[str]:
+    def synthesize_to_base64(self, text: str, **kwargs) -> Optional[str]:
         import base64
-        audio = self.synthesize(text)
+        audio = self.synthesize(text, **kwargs)
         if audio:
             return base64.b64encode(audio).decode("utf-8")
         return None
+
+    def get_voices(self, provider: Optional[str] = None) -> list[dict]:
+        """Return available voices for a provider.
+
+        Each entry: {"value": "...", "label": "..."}
+        """
+        if provider is None:
+            provider = self._load_settings().get("tts_provider", "disabled")
+
+        if provider == "local":
+            return [{"value": v, "label": l} for v, l in KOKORO_VOICES]
+        if provider == "edge":
+            return [{"value": v, "label": l} for v, l in EDGE_VOICES]
+        if provider == "endpoint" or provider.startswith("endpoint:"):
+            return [{"value": v, "label": l} for v, l in OPENAI_VOICES]
+        return []
 
     def set_voice(self, voice: str):
         """Legacy no-op — voice is now managed via admin settings."""
@@ -301,6 +403,8 @@ class TTSService:
         if provider == "local":
             kokoro = self._get_kokoro()
             stats["model"] = "Kokoro-82M (CPU/ONNX)" if (kokoro and kokoro.available) else "Kokoro (not loaded)"
+        elif provider == "edge":
+            stats["model"] = "Edge TTS (Microsoft Neural)"
         elif provider == "browser":
             stats["model"] = "Browser (Web Speech API)"
         elif provider.startswith("endpoint:"):

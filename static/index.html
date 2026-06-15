@@ -1767,6 +1767,7 @@
                 <select id="set-ttsProviderSelect" class="settings-select">
                   <option value="disabled">Disabled</option>
                   <option value="browser">Browser (built-in)</option>
+                  <option value="edge">Edge TTS (Free)</option>
                   <option value="local">Local (Kokoro-82M)</option>
                 </select>
               </div>
@@ -1782,17 +1783,9 @@
               <div id="set-ttsVoiceRow" style="display:flex;align-items:center;gap:0.75rem;">
                 <label class="settings-label">Voice</label>
                 <select id="set-ttsVoiceSelect" class="settings-select">
-                  <option value="alloy">Alloy</option>
-                  <option value="ash">Ash</option>
-                  <option value="coral">Coral</option>
-                  <option value="echo">Echo</option>
-                  <option value="fable">Fable</option>
-                  <option value="nova">Nova</option>
-                  <option value="onyx">Onyx</option>
-                  <option value="sage">Sage</option>
-                  <option value="shimmer">Shimmer</option>
+                  <option value="">Loading...</option>
                 </select>
-                <input id="set-ttsVoiceInput" type="text" placeholder="af_heart" style="flex:1;padding:5px;display:none;">
+                <input id="set-ttsVoiceInput" type="text" placeholder="Custom voice name" style="flex:1;padding:5px;display:none;">
               </div>
               <div id="set-ttsSpeedRow" style="display:flex;align-items:center;gap:0.75rem;">
                 <label class="settings-label">Speed</label>
