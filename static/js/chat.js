@@ -1040,11 +1040,15 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       let metrics = null;
       let isThinking = false;
       let thinkingStartTime = null;
-      // Sentence-chunked TTS pipeline: play first sentence while rest streams
-      const ttsChunks = [];
-      let ttsSynthesizing = false;
-      let ttsCurrentAudio = null;
-      let ttsPlainBuffer = '';
+      // Dual-phase TTS pipeline: Phase 1 (streaming) synthesizes 1 ahead
+      // of playback; Phase 2 (stream done) parallel-synthesizes all remaining.
+      let ttsTextQueue = [];       // text chunks waiting to synthesize
+      let ttsAudioQueue = [];      // blobs ready to play, in order
+      let ttsSynthesizing = false; // is a synthesis fetch in flight?
+      let ttsPlaying = false;      // is audio currently playing?
+      let ttsStreamDone = false;   // has the text stream finished?
+      let ttsCurrentAudio = null;  // currently playing Audio element
+      let ttsPlainBuffer = '';     // partial sentence buffer
       const TTS_MIN_CHUNK = 80;
 
       function _stripForTTS(raw) {
@@ -1052,6 +1056,60 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
           .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
           .replace(/```[\s\S]*?```/g, '')
           .replace(/<[^>]+>/g, '');
+      }
+
+      async function _synthesizeText(text) {
+        console.log('[TTS] synth start:', text.slice(0, 40));
+        try {
+          var r = await fetch('/api/tts/synthesize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: text, format: 'audio' })
+          });
+          if (!r.ok) return null;
+          var blob = await r.blob();
+          console.log('[TTS] synth done:', blob.size, 'bytes');
+          return blob;
+        } catch (e) { return null; }
+      }
+
+      function _playNext() {
+        console.log('[TTS] playing, audioQueue remaining:', ttsAudioQueue.length);
+        if (ttsAudioQueue.length === 0) {
+          ttsPlaying = false;
+          return;
+        }
+        var blob = ttsAudioQueue.shift();
+        if (!blob) { _playNext(); return; }
+        ttsPlaying = true;
+        var url = URL.createObjectURL(blob);
+        var audio = new Audio(url);
+        ttsCurrentAudio = audio;
+        audio.onended = function() {
+          ttsCurrentAudio = null;
+          URL.revokeObjectURL(url);
+          _playNext();
+        };
+        audio.onerror = function() {
+          ttsCurrentAudio = null;
+          URL.revokeObjectURL(url);
+          _playNext();
+        };
+        audio.play();
+        // Phase 1 lookahead: synthesize next chunk while this one plays
+        if (!ttsStreamDone && ttsTextQueue.length > 0 && !ttsSynthesizing) {
+          _synthesizeNext();
+        }
+      }
+
+      async function _synthesizeNext() {
+        if (ttsSynthesizing || ttsTextQueue.length === 0) return;
+        ttsSynthesizing = true;
+        var text = ttsTextQueue.shift();
+        var blob = await _synthesizeText(text);
+        ttsAudioQueue.push(blob);
+        ttsSynthesizing = false;
+        if (!ttsPlaying && ttsAudioQueue.length > 0) _playNext();
       }
 
       function _feedTTSChunk(delta) {
@@ -1071,63 +1129,36 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
         var chunk = ttsPlainBuffer.slice(0, cutAt).trim();
         ttsPlainBuffer = ttsPlainBuffer.slice(cutAt).trimStart();
         if (chunk.length > 0) {
-          ttsChunks.push(chunk);
-          _processTTSQueue();
+          ttsTextQueue.push(chunk);
+          if (!ttsSynthesizing) _synthesizeNext();
         }
       }
 
       function _flushTTSBuffer() {
+        ttsStreamDone = true;
         var pending = ttsPlainBuffer.trim();
-        if (pending.length < 1) return;
-        ttsChunks.push(pending);
-        ttsPlainBuffer = '';
-        _processTTSQueue();
-      }
-
-      function _processTTSQueue() {
-        if (ttsSynthesizing || ttsChunks.length === 0) return;
-        ttsSynthesizing = true;
-        var chunk = ttsChunks.shift();
-        fetch('/api/tts/synthesize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: chunk, format: 'audio' })
-        })
-        .then(function(r) {
-          if (!r.ok) throw new Error('TTS failed');
-          return r.blob();
-        })
-        .then(function(blob) {
-          var url = URL.createObjectURL(blob);
-          var audio = new Audio(url);
-          ttsCurrentAudio = audio;
-          audio.onended = function() {
-            ttsSynthesizing = false;
-            ttsCurrentAudio = null;
-            URL.revokeObjectURL(url);
-            _processTTSQueue();
-          };
-          audio.onerror = function() {
-            ttsSynthesizing = false;
-            ttsCurrentAudio = null;
-            URL.revokeObjectURL(url);
-            _processTTSQueue();
-          };
-          audio.play().catch(function() {
-            ttsSynthesizing = false;
-            ttsCurrentAudio = null;
-            _processTTSQueue();
+        if (pending.length > 0) {
+          ttsTextQueue.push(pending);
+          ttsPlainBuffer = '';
+        }
+        if (ttsTextQueue.length === 0 && ttsAudioQueue.length === 0) return;
+        // Phase 2: parallel-synthesize all remaining text chunks
+        var remaining = ttsTextQueue.slice();
+        ttsTextQueue = [];
+        console.log('[TTS] stream done, parallel synth of', remaining.length, 'chunks');
+        Promise.all(remaining.map(function(t) { return _synthesizeText(t); }))
+          .then(function(blobs) {
+            blobs.forEach(function(b) { ttsAudioQueue.push(b); });
+            if (!ttsPlaying) _playNext();
           });
-        })
-        .catch(function() {
-          ttsSynthesizing = false;
-          _processTTSQueue();
-        });
       }
 
       function _stopTTS() {
-        ttsChunks.length = 0;
+        ttsTextQueue = [];
+        ttsAudioQueue = [];
         ttsSynthesizing = false;
+        ttsPlaying = false;
+        ttsStreamDone = false;
         ttsPlainBuffer = '';
         if (ttsCurrentAudio) {
           ttsCurrentAudio.pause();
