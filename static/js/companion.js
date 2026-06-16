@@ -23,6 +23,8 @@ function defaultProfile() {
     additionalConditions: '',
     sleepScheduleStart: '',
     sleepScheduleEnd: '',
+    systemInfo: null,
+    systemInfoUpdatedAt: null,
   };
 }
 
@@ -183,6 +185,7 @@ function openPanel() {
   populateCheckinForm();
   populateProfileForm();
   loadTodayTab();
+  renderSysInfo();
 }
 
 function closePanel() {
@@ -1234,12 +1237,116 @@ function populateProfileForm() {
   document.querySelectorAll('[data-companion-pattern]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.companionPattern === p.energyPattern);
   });
+
+  renderSysInfo();
 }
 
 function updateAdditionalCounter() {
   const ta = el('companion-profile-additional');
   const counter = el('companion-profile-additional-counter');
   if (ta && counter) counter.textContent = ta.value.length;
+}
+
+function renderSysInfo() {
+  const p = loadProfile();
+  const sysinfo = p.systemInfo;
+  const updatedAt = p.systemInfoUpdatedAt;
+  const empty = document.getElementById('companion-sysinfo-empty');
+  const table = document.getElementById('companion-sysinfo-table');
+  const updatedEl = document.getElementById('companion-sysinfo-updated');
+
+  if (!sysinfo) {
+    if (empty) empty.classList.remove('hidden');
+    if (table) table.classList.add('hidden');
+    if (updatedEl) updatedEl.textContent = '';
+    return;
+  }
+
+  if (empty) empty.classList.add('hidden');
+  if (table) table.classList.remove('hidden');
+
+  const os = sysinfo.os || {};
+  const cpu = sysinfo.cpu || {};
+  const ram = sysinfo.ram || {};
+  let html = '<table style="width:100%;border-collapse:collapse;">';
+  const rows = [
+    ['Hostname', sysinfo.hostname_hash || sysinfo.hostname],
+    ['OS', os.name || sysinfo.platform],
+    ['Kernel', os.release || sysinfo.release],
+    ['CPU', cpu.brand || sysinfo.cpu_name],
+    ['Cores', cpu.logical_cores || cpu.physical_cores || sysinfo.cpu_cores],
+    ['RAM', ram.total_gb || sysinfo.ram_gb ? (ram.total_gb || sysinfo.ram_gb) + ' GB' : null],
+  ];
+  if (sysinfo.gpus && sysinfo.gpus.length) {
+    sysinfo.gpus.forEach((g, i) => {
+      rows.push([i === 0 ? 'GPU' : '', g.name + (g.vram_total_mb || g.vram_mb ? ' (' + (g.vram_total_mb || g.vram_mb) + ' MB)' : '')]);
+    });
+  }
+  if (sysinfo.disks && sysinfo.disks.length) {
+    sysinfo.disks.forEach(d => {
+      const dev = d.mount || d.device || d.mountpoint || '?';
+      const size = d.total_gb || d.size_gb || '?';
+      rows.push(['Disk', dev + ' (' + size + ' GB)']);
+    });
+  }
+  if (os.python_version || sysinfo.python_version) {
+    const py = (os.python_version || sysinfo.python_version || '').split(' ')[0];
+    if (py) rows.push(['Python', py]);
+  }
+  if (sysinfo.battery) {
+    const b = sysinfo.battery;
+    rows.push(['Battery', b.percent + '%' + (b.plugged_in ? ' (charging)' : '')]);
+  }
+  if (sysinfo.uptime_hours || sysinfo.uptime_seconds) {
+    let hours = sysinfo.uptime_hours || (sysinfo.uptime_seconds / 3600);
+    const days = Math.floor(hours / 24);
+    hours = Math.floor(hours % 24);
+    rows.push(['Uptime', days + 'd ' + hours + 'h']);
+  }
+  for (const [label, value] of rows) {
+    if (value !== null && value !== undefined) {
+      html += '<tr><td style="padding:2px 8px 2px 0;opacity:0.6;white-space:nowrap;vertical-align:top;">' + label + '</td><td style="padding:2px 0;">' + value + '</td></tr>';
+    }
+  }
+  html += '</table>';
+  table.innerHTML = html;
+
+  if (updatedEl && updatedAt) {
+    try {
+      const d = new Date(updatedAt);
+      updatedEl.textContent = 'Last updated: ' + d.toLocaleString();
+    } catch (_) {
+      updatedEl.textContent = '';
+    }
+  }
+}
+
+/* ── Downloads tab ── */
+function renderDownloads() {
+  fetch('/api/companion/sysinfo/downloads/status').then(r => r.json()).then(s => {
+    const normalBtn = el('companion-dl-normal');
+    const silentBtn = el('companion-dl-silent');
+    const normalLegend = el('companion-dl-normal-legend');
+    const silentLegend = el('companion-dl-silent-legend');
+    if (s.exe_normal) {
+      normalBtn.disabled = false;
+      normalBtn.style.opacity = '1';
+      normalLegend.textContent = 'Shows you exactly what data it found and asks before sending. Use this the first time, or if you want to review each time.';
+    } else {
+      normalBtn.disabled = true;
+      normalBtn.style.opacity = '0.4';
+      normalLegend.textContent = 'Not available yet.';
+    }
+    if (s.exe_silent) {
+      silentBtn.disabled = false;
+      silentBtn.style.opacity = '1';
+      silentLegend.textContent = 'Runs quietly in the background and sends automatically once it finds Odysseus. Only asks for input if it can\'t find the server on its own. Good for routine re-syncs.';
+    } else {
+      silentBtn.disabled = true;
+      silentBtn.style.opacity = '0.4';
+      silentLegend.textContent = 'Not available yet.';
+    }
+  }).catch(() => {});
 }
 
 function saveProfileForm() {
@@ -1299,7 +1406,10 @@ async function syncFromBackend() {
       p.additionalConditions = profileData.additional_conditions || '';
       p.sleepScheduleStart = profileData.sleep_schedule_start || '';
       p.sleepScheduleEnd = profileData.sleep_schedule_end || '';
+      p.systemInfo = profileData.system_info || null;
+      p.systemInfoUpdatedAt = profileData.system_info_updated_at || null;
       saveProfile(p);
+      renderSysInfo();
     }
 
     const checkinsData = await checkinsRes.json();
@@ -1573,6 +1683,62 @@ function init() {
   el('companion-weekday-add')?.addEventListener('click', () => addLifestyleBlock('weekday'));
   el('companion-weekend-add')?.addEventListener('click', () => addLifestyleBlock('weekend'));
   el('companion-lifestyle-save')?.addEventListener('click', saveLifestyleToBackend);
+
+  /* Sysinfo card collapse */
+  const sysinfoHeader = el('companion-sysinfo-header');
+  if (sysinfoHeader) {
+    sysinfoHeader.addEventListener('click', () => {
+      document.getElementById('companion-sysinfo-card')?.classList.toggle('expanded');
+    });
+  }
+
+  /* Sysinfo refresh */
+  el('companion-sysinfo-refresh')?.addEventListener('click', async () => {
+    const btn = el('companion-sysinfo-refresh');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Refreshing...'; }
+    try {
+      const res = await fetch(`${API_BASE}/api/companion/profile`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.display_name !== undefined) {
+          const p = loadProfile();
+          p.systemInfo = data.system_info || null;
+          p.systemInfoUpdatedAt = data.system_info_updated_at || null;
+          saveProfile(p);
+        }
+      }
+    } catch (e) {
+      console.warn('Sysinfo refresh failed', e);
+    }
+    renderSysInfo();
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Refresh'; }
+  });
+
+  /* Sysinfo — open downloads modal */
+  el('companion-sysinfo-get-tool')?.addEventListener('click', () => {
+    const modal = el('companion-dl-modal');
+    if (modal) {
+      modal.classList.remove('hidden');
+      renderDownloads();
+    }
+  });
+
+  /* Downloads modal — close */
+  function closeDlModal() {
+    el('companion-dl-modal')?.classList.add('hidden');
+  }
+  el('companion-dl-close')?.addEventListener('click', closeDlModal);
+  el('companion-dl-modal')?.addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeDlModal();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeDlModal();
+  });
+
+  /* Download buttons (inside modal) */
+  el('companion-dl-normal')?.addEventListener('click', () => window.open('/api/companion/sysinfo/downloads/exe?variant=normal', '_blank'));
+  el('companion-dl-silent')?.addEventListener('click', () => window.open('/api/companion/sysinfo/downloads/exe?variant=silent', '_blank'));
+  el('companion-dl-source')?.addEventListener('click', () => window.open('/api/companion/sysinfo/downloads/source', '_blank'));
 
   /* Lifestyle block removal via delegation */
   document.querySelector('#companion-panel .companion-panel-body')?.addEventListener('click', e => {

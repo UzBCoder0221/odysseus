@@ -1059,7 +1059,6 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       }
 
       async function _synthesizeText(text) {
-        // console.log('[TTS] synth start:', text.slice(0, 40));
         try {
           var r = await fetch('/api/tts/synthesize', {
             method: 'POST',
@@ -1068,13 +1067,11 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
           });
           if (!r.ok) return null;
           var blob = await r.blob();
-          // console.log('[TTS] synth done:', blob.size, 'bytes');
           return blob;
         } catch (e) { return null; }
       }
 
       function _playNext() {
-        // console.log('[TTS] playing, audioQueue remaining:', ttsAudioQueue.length);
         if (ttsAudioQueue.length === 0) {
           ttsPlaying = false;
           return;

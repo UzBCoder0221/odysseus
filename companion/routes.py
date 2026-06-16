@@ -17,18 +17,37 @@ on a GET would be unsafe (Lax cookies ride top-level GET navigations), so GET
 """
 
 import html
-import re
-
+import io
 import json
+import os
+import re
 import uuid
+import zipfile
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 
 from core.middleware import require_admin
 from src.auth_helpers import get_current_user
 
 from companion import pairing as _pairing
+
+
+# Tracks the last user who made an authenticated cookie-session request,
+# so the sysinfo POST endpoint can save incoming data under that profile
+# even when the collector uses a different owner id (e.g. "auto").
+_last_active_username: str | None = None
+
+
+def _record_active_user(username: str | None) -> None:
+    global _last_active_username
+    if username:
+        _last_active_username = username
+
+
+def get_last_active_user() -> str | None:
+    return _last_active_username
 
 
 def token_owner(request: Request) -> str | None:
@@ -41,7 +60,9 @@ def token_owner(request: Request) -> str | None:
     """
     if getattr(request.state, "api_token", False):
         return getattr(request.state, "api_token_owner", None)
-    return get_current_user(request)
+    owner = get_current_user(request)
+    _record_active_user(owner)
+    return owner
 
 
 def owner_can_see(row_owner, owner) -> bool:
@@ -979,7 +1000,11 @@ def setup_companion_routes() -> APIRouter:
 
     @router.get("/profile")
     def get_profile(request: Request):
-        """Get the companion profile for the current user."""
+        """Get the companion profile for the current user.
+
+        If the current owner's profile has no system_info, falls back to
+        the first profile in the database that has one (handles the case
+        where the collector was run under a different owner id)."""
         from core.database import SessionLocal, CompanionProfile
 
         owner = token_owner(request)
@@ -992,6 +1017,19 @@ def setup_companion_routes() -> APIRouter:
             ).first()
             if not profile:
                 return {}
+
+            system_info = json.loads(profile.system_info) if profile.system_info else None
+            system_info_updated_at = profile.system_info_updated_at
+
+            if not system_info:
+                fallback = db.query(CompanionProfile).filter(
+                    CompanionProfile.system_info.isnot(None),
+                    CompanionProfile.system_info != ""
+                ).first()
+                if fallback and fallback.owner != owner:
+                    system_info = json.loads(fallback.system_info)
+                    system_info_updated_at = fallback.system_info_updated_at
+
             return {
                 "display_name": profile.display_name or "",
                 "timezone": profile.timezone or "UTC",
@@ -1004,6 +1042,8 @@ def setup_companion_routes() -> APIRouter:
                 "additional_conditions": profile.additional_conditions,
                 "sleep_schedule_start": profile.sleep_schedule_start,
                 "sleep_schedule_end": profile.sleep_schedule_end,
+                "system_info": system_info,
+                "system_info_updated_at": system_info_updated_at.isoformat() if system_info_updated_at else None,
             }
         finally:
             db.close()
@@ -1043,6 +1083,143 @@ def setup_companion_routes() -> APIRouter:
             return {"ok": True}
         finally:
             db.close()
+
+    # ── System info ──
+
+    SYSINFO_TOKEN_HEADER = "X-Odysseus-Token"
+    SYSINFO_TOKEN_VALUE = "sysinfo"
+
+    @router.post("/sysinfo")
+    async def receive_sysinfo(request: Request):
+        """Receive system info payload from the collector script.
+        Auth-exempt; validated by X-Odysseus-Token: sysinfo header."""
+        from core.database import SessionLocal, CompanionProfile
+
+        token = request.headers.get(SYSINFO_TOKEN_HEADER, "")
+        if token != SYSINFO_TOKEN_VALUE:
+            return JSONResponse(status_code=403, content={"error": "Invalid token"})
+
+        body = await request.json()
+        owner = body.get("owner", "").strip()
+        system_info = body.get("system_info")
+        if not owner or not system_info:
+            return JSONResponse(status_code=400, content={"error": "Missing owner or system_info"})
+
+        db = SessionLocal()
+        try:
+            profile = db.query(CompanionProfile).filter(
+                CompanionProfile.owner == owner
+            ).first()
+            if not profile:
+                profile = CompanionProfile(
+                    id=str(uuid.uuid4()),
+                    owner=owner,
+                )
+                db.add(profile)
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            profile.system_info = json.dumps(system_info)
+            profile.system_info_updated_at = now
+
+            # Also save under the last active user (if different), so the
+            # data is visible to whoever is currently logged into the web UI.
+            last_user = get_last_active_user()
+            if last_user and last_user != owner:
+                active = db.query(CompanionProfile).filter(
+                    CompanionProfile.owner == last_user
+                ).first()
+                if not active:
+                    active = CompanionProfile(
+                        id=str(uuid.uuid4()),
+                        owner=last_user,
+                    )
+                    db.add(active)
+                active.system_info = json.dumps(system_info)
+                active.system_info_updated_at = now
+
+            db.commit()
+            return {"ok": True}
+        finally:
+            db.close()
+
+    @router.get("/sysinfo")
+    def get_sysinfo(request: Request):
+        """Return stored system info for the current user.
+        Path is auth-exempt, so we manually validate the session cookie."""
+        from routes.auth_routes import SESSION_COOKIE
+
+        auth_manager = getattr(request.app.state, "auth_manager", None)
+        if not auth_manager:
+            return JSONResponse(status_code=503, content={"error": "Auth not configured"})
+
+        token = request.cookies.get(SESSION_COOKIE, "")
+        if not auth_manager.validate_token(token):
+            return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+
+        owner = auth_manager.get_username_for_token(token)
+        if not owner:
+            return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+
+        from core.database import SessionLocal, CompanionProfile
+
+        db = SessionLocal()
+        try:
+            profile = db.query(CompanionProfile).filter(
+                CompanionProfile.owner == owner
+            ).first()
+            if not profile or not profile.system_info:
+                return {"system_info": None, "updated_at": None}
+            return {
+                "system_info": json.loads(profile.system_info),
+                "updated_at": profile.system_info_updated_at.isoformat() if profile.system_info_updated_at else None,
+            }
+        finally:
+            db.close()
+
+    _DIST_DIR = os.path.join(os.path.dirname(__file__), "..", "tools", "dist")
+    _SOURCE_FILES = ["sysinfo_helpers.py", "sysinfo_collector.py",
+                     "sysinfo_collector_silent.py", "BUILD_INSTRUCTIONS.txt"]
+
+    @router.get("/sysinfo/downloads/status")
+    def downloads_status(request: Request):
+        """Return availability of each download variant."""
+        return {
+            "exe_normal": os.path.isfile(os.path.join(_DIST_DIR, "OdysseusSysInfo.exe")),
+            "exe_silent": os.path.isfile(os.path.join(_DIST_DIR, "OdysseusSysInfo_Silent.exe")),
+            "source_bundle": True,
+        }
+
+    @router.get("/sysinfo/downloads/exe")
+    def download_exe(request: Request, variant: str = ""):
+        """Serve a pre-built collector .exe."""
+        filename = {"normal": "OdysseusSysInfo.exe",
+                    "silent": "OdysseusSysInfo_Silent.exe"}.get(variant)
+        if not filename:
+            return JSONResponse(status_code=404, content={"error": "Invalid variant"})
+        path = os.path.join(_DIST_DIR, filename)
+        if not os.path.isfile(path):
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Not built yet — see source download for build instructions"},
+            )
+        return FileResponse(path, media_type="application/octet-stream",
+                            filename=filename,
+                            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    @router.get("/sysinfo/downloads/source")
+    def download_source(request: Request):
+        """Serve a ZIP of the collector source files."""
+        tools_dir = os.path.join(os.path.dirname(__file__), "..", "tools")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in _SOURCE_FILES:
+                fpath = os.path.join(tools_dir, name)
+                if os.path.isfile(fpath):
+                    zf.write(fpath, arcname=name)
+        buf.seek(0)
+        return Response(content=buf.getvalue(), media_type="application/zip",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="odysseus_sysinfo_source.zip"'})
+
 
     # ── Pattern suggestion daily cache ──
     _pattern_suggestion_cache: dict = {}

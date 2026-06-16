@@ -698,6 +698,10 @@ class CompanionProfile(TimestampMixin, Base):
     sleep_schedule_start = Column(String(5), nullable=True)     # "HH:MM"
     sleep_schedule_end = Column(String(5), nullable=True)       # "HH:MM"
 
+    # Stage sysinfo — System information collector
+    system_info = Column(Text, nullable=True)                 # JSON blob of system specs
+    system_info_updated_at = Column(DateTime, nullable=True)  # when sysinfo was last updated
+
 
 class CompanionCheckin(TimestampMixin, Base):
     """Daily check-in entry for the companion system."""
@@ -1949,6 +1953,36 @@ def init_db():
     _migrate_encrypt_endpoint_keys()
     _migrate_backfill_task_folders()
     _migrate_create_companion_lifestyle_table()
+    _migrate_add_companion_stage_sysinfo()
+
+
+def _migrate_add_companion_stage_sysinfo():
+    """Add system_info and system_info_updated_at columns to companion_profiles."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(companion_profiles)")
+        existing = [row[1] for row in cursor.fetchall()]
+        sysinfo_cols = [
+            ("system_info", "TEXT"),
+            ("system_info_updated_at", "DATETIME"),
+        ]
+        for col_name, col_type in sysinfo_cols:
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE companion_profiles ADD COLUMN {col_name} {col_type}")
+                logging.getLogger(__name__).info(f"Migrated: added {col_name} to companion_profiles")
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"companion sysinfo migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _migrate_create_companion_lifestyle_table():

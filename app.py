@@ -181,6 +181,9 @@ if AUTH_ENABLED:
         "/api/auth/integrations/presets",
         "/api/health",
         "/api/version",
+        "/api/companion/sysinfo",
+        "/api/companion/sysinfo/downloads/status",
+        "/api/companion/sysinfo/downloads/source",
         "/login",
     }
     AUTH_EXEMPT_PREFIXES = ["/static"]

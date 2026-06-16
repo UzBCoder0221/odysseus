@@ -37499,3 +37499,23 @@ body.theme-frosted .modal {
 .companion-chat-msg.chat-msg-error .chat-retry-btn:hover {
   background: color-mix(in srgb, #e06c75 15%, transparent);
 }
+
+/* Companion sysinfo card collapse */
+.companion-sysinfo-card .companion-chevron {
+  transition: transform 0.25s ease;
+}
+.companion-sysinfo-card.expanded .companion-chevron {
+  transform: rotate(180deg);
+}
+.companion-sysinfo-card .companion-card-body {
+  overflow: hidden;
+  transition: max-height 0.25s ease, opacity 0.2s ease;
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+}
+.companion-sysinfo-card.expanded .companion-card-body {
+  max-height: 600px;
+  opacity: 1;
+  padding-top: 8px;
+}

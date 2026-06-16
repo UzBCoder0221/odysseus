@@ -1422,6 +1422,27 @@
         <div style="display:flex;gap:6px;margin-top:8px;">
           <button type="button" class="confirm-btn" id="companion-sync-btn">Sync to server</button>
         </div>
+
+        <!-- System Info collapsible card -->
+        <div class="companion-card companion-sysinfo-card" id="companion-sysinfo-card" style="margin-top:12px;">
+          <div class="companion-card-header" id="companion-sysinfo-header">
+            <div class="companion-card-title">💻 System Info</div>
+            <div class="companion-card-header-actions">
+              <svg class="companion-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </div>
+          <div class="companion-card-body">
+            <div id="companion-sysinfo-empty" style="padding:12px 8px;text-align:center;opacity:0.5;font-size:13px;">
+              Not collected yet. Get the collector tool to send your system info here.
+            </div>
+            <div id="companion-sysinfo-table" class="hidden" style="font-size:12px;line-height:1.6;"></div>
+            <div id="companion-sysinfo-updated" style="font-size:11px;color:#888;margin-top:4px;"></div>
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+              <button type="button" class="confirm-btn" id="companion-sysinfo-refresh" style="flex:1;">🔄 Refresh</button>
+              <button type="button" class="confirm-btn" id="companion-sysinfo-get-tool" style="flex:1;">📥 Get the collector tool</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Lifestyle panel -->
@@ -1460,6 +1481,56 @@
 
     </div>
   </div>
+
+  <!-- Downloads modal -->
+  <div id="companion-dl-modal" class="modal hidden">
+    <div class="modal-content" role="dialog" aria-label="Downloads" style="background:var(--bg);max-width:500px;">
+      <div class="modal-header">
+        <h4>📥 Downloads</h4>
+        <button class="close-btn" id="companion-dl-close" aria-label="Close downloads">✖</button>
+      </div>
+      <div class="modal-body" style="max-height:70vh;overflow-y:auto;">
+        <div class="companion-card" style="margin-bottom:12px;">
+          <div class="companion-card-title">Quick Setup</div>
+          <div class="companion-card-body" style="display:block;">
+            <p style="margin:0 0 10px 0;font-size:13px;opacity:0.8;">
+              Ready-to-run tools — no Python required. Pick one:
+            </p>
+            <button type="button" class="confirm-btn confirm-btn-primary" id="companion-dl-normal" style="width:100%;margin-bottom:4px;">
+              ⬇ Download Collector
+            </button>
+            <p id="companion-dl-normal-legend" style="margin:0 0 12px 0;font-size:12px;opacity:0.65;">
+              Shows you exactly what data it found and asks before sending. Use this the first time, or if you want to review each time.
+            </p>
+            <button type="button" class="confirm-btn confirm-btn-primary" id="companion-dl-silent" style="width:100%;margin-bottom:4px;">
+              ⬇ Download Silent Collector
+            </button>
+            <p id="companion-dl-silent-legend" style="margin:0 0 4px 0;font-size:12px;opacity:0.65;">
+              Runs quietly in the background and sends automatically once it finds Odysseus. Only asks for input if it can't find the server on its own. Good for routine re-syncs.
+            </p>
+          </div>
+        </div>
+        <div class="companion-card" style="margin-bottom:12px;">
+          <div class="companion-card-title">View Source / Build Your Own</div>
+          <div class="companion-card-body" style="display:block;">
+            <p style="margin:0 0 10px 0;font-size:13px;opacity:0.8;">
+              If you'd rather not run a pre-built .exe from someone else, download the exact Python source used to build it above. Read it, verify it does what it says, then build your own .exe — instructions are included.
+            </p>
+            <button type="button" class="confirm-btn" id="companion-dl-source" style="width:100%;margin-bottom:4px;">
+              ⬇ Download Source (.zip)
+            </button>
+            <p style="margin:0 0 4px 0;font-size:12px;opacity:0.65;">
+              Contains the full source code (3 files) plus step-by-step build instructions for Windows.
+            </p>
+          </div>
+        </div>
+        <p style="margin:0;font-size:11px;opacity:0.5;line-height:1.5;">
+          Either way: no passwords, IPs, MAC addresses, or personal files are ever collected — only hardware specs (CPU, RAM, GPU, disk space, etc). You'll always see exactly what's being sent before it's sent, except when using the Silent Collector after it has already found your server automatically.
+        </p>
+      </div>
+    </div>
+  </div>
+
   <div id="companion-overlay" class="companion-overlay hidden"></div>
 
   <button id="scroll-bottom-btn" class="scroll-nav-btn" title="Scroll to bottom">▼</button>
