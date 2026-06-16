@@ -1092,28 +1092,23 @@ async function initSttSettings() {
   var modelSelect = el('set-sttModelSelect');
   var modelInput = el('set-sttModelInput');
   var modelRow = el('set-sttModelRow');
+  var modeSelect = el('set-sttModeSelect');
+  var silenceSlider = el('set-sttSilenceSlider');
+  var silenceLabel = el('set-sttSilenceLabel');
   var langRow = el('set-sttLangRow');
   var langInput = el('set-sttLangInput');
   var sttMsg = el('set-sttSettingsMsg');
   var sttEnabledToggle = el('set-sttEnabledToggle');
   var sttConfigWrap = el('set-sttConfigWrap');
-  // STT was removed from AI Defaults — bail if the UI isn't present.
   if (!provSel) return;
 
-  function isEndpoint() { return provSel.value.startsWith('endpoint:'); }
-  function getModel() { return isEndpoint() ? modelInput.value : modelSelect.value; }
+  function getModel() { return modelSelect.value; }
 
   function updateVisibility() {
     var prov = provSel.value;
-    var showModel = prov === 'local' || prov.startsWith('endpoint:');
-    var showLang = prov !== 'disabled';
-    modelRow.style.display = showModel ? 'flex' : 'none';
+    var showLang = prov !== 'disabled' && prov !== 'browser';
+    modelRow.style.display = prov === 'local' ? 'flex' : 'none';
     langRow.style.display = showLang ? 'flex' : 'none';
-    if (isEndpoint()) {
-      modelSelect.style.display = 'none'; modelInput.style.display = '';
-    } else {
-      modelSelect.style.display = ''; modelInput.style.display = 'none';
-    }
   }
 
   function syncSttDisabled() {
@@ -1123,21 +1118,34 @@ async function initSttSettings() {
     if (sttConfigWrap) sttConfigWrap.style.pointerEvents = off ? 'none' : '';
   }
 
-  // Effective provider: if toggle is off, treat as disabled regardless of provider select
   function effectiveProvider() {
     if (sttEnabledToggle && !sttEnabledToggle.checked) return 'disabled';
     return provSel.value;
   }
 
-  // Add API endpoints that might support STT
-  try {
-    var epRes = await fetch('/api/model-endpoints', { credentials: 'same-origin' });
-    var endpoints = await epRes.json();
-    endpoints.forEach(function(ep) {
-      if (!ep.is_enabled) return;
-      var opt = document.createElement('option'); opt.value = 'endpoint:' + ep.id; opt.textContent = ep.name + ' (API)'; provSel.appendChild(opt);
+  function saveSTTLocal() {
+    try {
+      localStorage.setItem('stt_enabled', sttEnabledToggle ? sttEnabledToggle.checked : false);
+      localStorage.setItem('stt_provider', provSel.value);
+      localStorage.setItem('stt_mode', modeSelect ? modeSelect.value : 'fill');
+      localStorage.setItem('stt_silence_ms', silenceSlider ? silenceSlider.value : '1200');
+    } catch (_) {}
+  }
+
+  // Live update silence label
+  if (silenceSlider && silenceLabel) {
+    silenceSlider.addEventListener('input', function() {
+      silenceLabel.textContent = this.value + 'ms';
+      localStorage.setItem('stt_silence_ms', this.value);
     });
-  } catch (e) { console.warn('Failed to load endpoints for STT', e); }
+  }
+
+  // Live update mode
+  if (modeSelect) {
+    modeSelect.addEventListener('change', function() {
+      localStorage.setItem('stt_mode', this.value);
+    });
+  }
 
   // Load saved settings
   try {
@@ -1147,21 +1155,31 @@ async function initSttSettings() {
     if (settings.stt_model) { modelSelect.value = settings.stt_model; modelInput.value = settings.stt_model; }
     if (settings.stt_language) langInput.value = settings.stt_language;
     if (sttEnabledToggle) sttEnabledToggle.checked = settings.stt_enabled !== false;
+    if (modeSelect && settings.stt_mode) modeSelect.value = settings.stt_mode;
+    if (silenceSlider && settings.stt_silence_ms) { silenceSlider.value = settings.stt_silence_ms; silenceLabel.textContent = settings.stt_silence_ms + 'ms'; }
   } catch (e) { console.warn('Failed to load STT settings', e); }
 
   syncSttDisabled();
   updateVisibility();
+  saveSTTLocal();
 
   async function saveSTT() {
     try {
       var enabled = sttEnabledToggle ? sttEnabledToggle.checked : false;
+      var body = { stt_enabled: enabled, stt_provider: provSel.value, stt_model: getModel() || 'base', stt_language: langInput.value.trim() };
+      if (modeSelect) body.stt_mode = modeSelect.value;
+      if (silenceSlider) body.stt_silence_ms = parseInt(silenceSlider.value, 10);
       await fetch('/api/auth/settings', { method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stt_enabled: enabled, stt_provider: provSel.value, stt_model: getModel() || 'base', stt_language: langInput.value.trim() }) });
-      sttMsg.textContent = 'Saved'; sttMsg.style.color = 'var(--fg)'; setTimeout(() => { sttMsg.textContent = ''; }, 2000);
-      // Notify voiceRecorder of effective provider and update send button icon
+        body: JSON.stringify(body) });
+      sttMsg.textContent = 'Saved'; sttMsg.style.color = 'var(--fg)'; setTimeout(function() { sttMsg.textContent = ''; }, 2000);
+      saveSTTLocal();
       if (window.voiceRecorderModule) window.voiceRecorderModule._sttProvider = effectiveProvider();
       if (window._updateSendBtnIcon) window._updateSendBtnIcon();
+      // Notify sttModule of settings change
+      if (window.sttModule && typeof window.sttModule.refreshSettings === 'function') {
+        window.sttModule.refreshSettings();
+      }
     } catch (e) { sttMsg.textContent = 'Failed to save'; sttMsg.style.color = 'var(--red)'; }
   }
 

@@ -632,11 +632,18 @@ from routes.tts_routes import setup_tts_routes
 app.include_router(setup_tts_routes(tts_service))
 
 # STT
-from services.stt import get_stt_service
+from services.stt import get_stt_service, get_model as _stt_get_model
 stt_service = get_stt_service()
 from routes.stt_routes import setup_stt_routes
 app.include_router(setup_stt_routes(stt_service))
 logger.info("STT service initialized (provider managed via settings)")
+
+# Eagerly load the STT model at startup so first transcription isn't slow.
+try:
+    _stt_get_model()
+    logger.info("STT model pre-loaded")
+except Exception as _e:
+    logger.warning("STT model pre-load skipped (will load on first request): %s", _e)
 
 # Documents (artifacts/canvas)
 from routes.document_routes import setup_document_routes

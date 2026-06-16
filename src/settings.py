@@ -49,6 +49,8 @@ DEFAULT_SETTINGS = {
     "stt_enabled": False,
     "stt_provider": "disabled",
     "stt_model": "base",
+    "stt_mode": "fill",
+    "stt_silence_ms": 1200,
     "stt_language": "",
     "search_provider": "searxng",
     # Default fallback chain — when the primary provider fails or

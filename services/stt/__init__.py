@@ -1,3 +1,6 @@
-from services.stt.stt_service import get_stt_service
+# services/stt/__init__.py
+"""STT service — speech-to-text."""
 
-__all__ = ["get_stt_service"]
+from .stt_service import STTService, get_stt_service, get_model
+
+__all__ = ["STTService", "get_stt_service", "get_model"]

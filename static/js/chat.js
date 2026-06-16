@@ -11,6 +11,7 @@ import sessionModule from './sessions.js';
 import chatRenderer from './chatRenderer.js';
 import chatStream from './chatStream.js';
 import { addAITTSButton } from './tts-ai.js';
+import sttModule from './stt.js';
 import markdownModule from './markdown.js';
 import { svgifyEmoji } from './markdown.js';
 import spinnerModule from './spinner.js';
@@ -202,6 +203,9 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
       try { requestAnimationFrame(() => _wireArrowUpRecall(document.getElementById('message'))); } catch (_) {}
       setTimeout(() => _wireArrowUpRecall(document.getElementById('message')), 250);
     }
+
+    // Initialize STT (VAD, mic button)
+    sttModule.init();
   }
 
   // addMessage, createMsgFooter, displayMetrics, hideWelcomeScreen, showWelcomeScreen
@@ -5061,3 +5065,4 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
 
   export default chatModule;
   window.chatModule = chatModule;
+  window.sttModule = sttModule;
