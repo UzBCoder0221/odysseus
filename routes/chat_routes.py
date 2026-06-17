@@ -555,6 +555,7 @@ def setup_chat_routes(
             except Exception:
                 pass
 
+        input_source = str(form_data.get("input_source", "")).strip().lower()
         no_memory = str(form_data.get("no_memory", "")).lower() == "true"
         pre_context_tool_policy = build_effective_tool_policy(
             last_user_message=message,
@@ -582,6 +583,7 @@ def setup_chat_routes(
             # index would be useless / unwanted noise.
             agent_mode=(chat_mode == "agent"),
             allow_tool_preprocessing=allow_tool_preprocessing,
+            input_source=input_source,
         )
 
         _research_flags = {"do": do_research}  # Mutable container for generator scope

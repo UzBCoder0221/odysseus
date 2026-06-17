@@ -518,6 +518,7 @@ async def build_chat_context(
     use_enhanced_message: bool = False,
     agent_mode: bool = False,
     allow_tool_preprocessing: bool = True,
+    input_source: str = "",
 ) -> ChatContext:
     """Build the full context (preface + messages) for an LLM call.
 
@@ -634,6 +635,19 @@ async def build_chat_context(
                 messages.append(_dt_msg)
         except Exception:
             logger.debug("Failed to add current date/time context", exc_info=True)
+
+    # Voice input hint — ephemeral instruction injected when the message
+    # originated from voice (STT send mode). Placed immediately before the
+    # latest user turn, never persisted to DB (same pattern as datetime).
+    if input_source == "voice":
+        voice_hint = {
+            "role": "user",
+            "content": "[Voice Input] The message was spoken via voice input. Transcribe homophones accordingly, preferring words that match the context despite similar sounds.",
+        }
+        if messages and messages[-1].get("role") == "user":
+            messages.insert(len(messages) - 1, voice_hint)
+        else:
+            messages.append(voice_hint)
 
     # Auto-compact
     messages, context_length, was_compacted = await maybe_compact(

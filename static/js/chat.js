@@ -42,6 +42,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
   let _stallWatchdog = null;
   let _stallBannerShown = false;
   const STALL_THRESHOLD_MS = 60000;
+  let lastMessageWasVoice = false;
   let _sendInFlight = false;   // covers the window from click → streaming start
   let _displayOverride = null; // Override visible user bubble text (hides injected prompts)
   let _hideUserBubble = false; // Skip user bubble entirely (e.g. continue after stop)
@@ -206,6 +207,14 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
 
     // Initialize STT (VAD, mic button)
     sttModule.init();
+
+    // Reset voice-origin flag on manual keystroke (trusted events only)
+    const msgInput = document.getElementById('message');
+    if (msgInput) {
+      msgInput.addEventListener('input', function(e) {
+        if (e.isTrusted) lastMessageWasVoice = false;
+      });
+    }
   }
 
   // addMessage, createMsgFooter, displayMetrics, hideWelcomeScreen, showWelcomeScreen
@@ -784,6 +793,10 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
 
       const fd = new FormData();
       fd.append('message', _finalMsgWithInject);
+      if (lastMessageWasVoice) {
+        fd.append('input_source', 'voice');
+        lastMessageWasVoice = false;
+      }
       fd.append('session', streamSessionId);
       if (ids.length) fd.append('attachments', JSON.stringify(ids));
       // Auto-save & send active doc ID so the backend sees latest content
@@ -5017,6 +5030,8 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
   }
 
   // Public API
+  function setVoiceOrigin() { lastMessageWasVoice = true; }
+
   const chatModule = {
     init,
     initListeners,
@@ -5024,6 +5039,7 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
     addMessage: chatRenderer.addMessage,
     displayMetrics: chatRenderer.displayMetrics,
     handleChatSubmit,
+    setVoiceOrigin,
     abortCurrentRequest,
     detachCurrentStream,
     checkBackgroundStream,

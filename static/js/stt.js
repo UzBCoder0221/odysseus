@@ -1,6 +1,13 @@
 // static/js/stt.js
 /* Speech-to-Text module — VAD, recording, multiple providers */
 
+const STT_STOP_PHRASES = ['stop', 'cancel', 'never mind', 'nevermind'];
+
+function isStopCommand(text) {
+  var normalized = text.toLowerCase().trim().replace(/[.,!?]+$/, '');
+  return STT_STOP_PHRASES.includes(normalized);
+}
+
 let micStream = null;
 let audioContext = null;
 let analyser = null;
@@ -52,6 +59,10 @@ function updateMicUI(state) {
 }
 
 function handleTranscription(text) {
+  if (isStopCommand(text)) {
+    stopVAD();
+    return;
+  }
   const mode = getSTTMode();
   const input = document.getElementById('message');
   if (!input) return;
@@ -64,6 +75,9 @@ function handleTranscription(text) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     setTimeout(() => {
       if (window.chatModule && typeof window.chatModule.handleChatSubmit === 'function') {
+        if (typeof window.chatModule.setVoiceOrigin === 'function') {
+          window.chatModule.setVoiceOrigin();
+        }
         window.chatModule.handleChatSubmit(new Event('submit'));
       }
     }, 100);
