@@ -11,16 +11,18 @@ from src.settings import get_setting
 logger = logging.getLogger(__name__)
 
 _model = None
+_loaded_model_name = None
 
 
 def get_model():
-    global _model
-    if _model is None:
-        model_name = get_setting("stt_model", "base")
-        logger.info(f"Loading faster-whisper model '{model_name}' (CPU, int8)...")
+    global _model, _loaded_model_name
+    current_name = get_setting("stt_model", "small")
+    if _model is None or _loaded_model_name != current_name:
+        logger.info(f"Loading faster-whisper model '{current_name}' (CPU, int8)...")
         try:
             from faster_whisper import WhisperModel
-            _model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            _model = WhisperModel(current_name, device="cpu", compute_type="int8")
+            _loaded_model_name = current_name
             logger.info("faster-whisper model loaded OK")
         except Exception as e:
             logger.error(f"Failed to load faster-whisper: {e}")
@@ -29,6 +31,8 @@ def get_model():
 
 def transcribe(audio_bytes: bytes, mime_type: str = "audio/webm") -> str:
     model = get_model()
+    lang_setting = get_setting("stt_language", "").strip()
+    language = lang_setting if lang_setting else None
     suffix = ".webm" if "webm" in mime_type else ".wav" if "wav" in mime_type else ".mp4"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
         f.write(audio_bytes)
@@ -36,7 +40,7 @@ def transcribe(audio_bytes: bytes, mime_type: str = "audio/webm") -> str:
     try:
         segments, info = model.transcribe(
             tmp_path,
-            language=None,
+            language=language,
             vad_filter=True,
             vad_parameters={
                 "min_silence_duration_ms": 300,

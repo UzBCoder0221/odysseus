@@ -48,7 +48,7 @@ DEFAULT_SETTINGS = {
     "openai_api_key": "",
     "stt_enabled": False,
     "stt_provider": "disabled",
-    "stt_model": "base",
+    "stt_model": "small",
     "stt_mode": "fill",
     "stt_silence_ms": 1200,
     "stt_language": "",

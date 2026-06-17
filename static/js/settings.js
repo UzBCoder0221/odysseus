@@ -1132,18 +1132,26 @@ async function initSttSettings() {
     } catch (_) {}
   }
 
-  // Live update silence label
+  // Live update silence label + sync to server
   if (silenceSlider && silenceLabel) {
     silenceSlider.addEventListener('input', function() {
       silenceLabel.textContent = this.value + 'ms';
-      localStorage.setItem('stt_silence_ms', this.value);
+      if (window.syncSTTSetting) {
+        window.syncSTTSetting('stt_silence_ms', this.value);
+      } else {
+        try { localStorage.setItem('stt_silence_ms', this.value); } catch (_) {}
+      }
     });
   }
 
-  // Live update mode
+  // Live update mode + sync to server
   if (modeSelect) {
     modeSelect.addEventListener('change', function() {
-      localStorage.setItem('stt_mode', this.value);
+      if (window.syncSTTSetting) {
+        window.syncSTTSetting('stt_mode', this.value);
+      } else {
+        try { localStorage.setItem('stt_mode', this.value); } catch (_) {}
+      }
     });
   }
 

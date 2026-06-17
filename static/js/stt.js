@@ -234,6 +234,21 @@ function stopVAD() {
   updateMicUI('stt-idle');
 }
 
+/* ── Shared sync helper — writes to both localStorage and server ── */
+
+window.syncSTTSetting = async function(key, value) {
+  try { localStorage.setItem(key, value); } catch (_) {}
+  try {
+    await fetch('/api/auth/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [key]: value })
+    });
+  } catch (e) {
+    console.warn('STT setting sync failed:', key, e);
+  }
+};
+
 /* ── Dropdown ── */
 
 function buildDropdownHTML() {
@@ -309,7 +324,7 @@ function wireDropdownEvents() {
   if (toggle) {
     toggle.addEventListener('change', function() {
       var on = this.checked;
-      try { localStorage.setItem('stt_enabled', on); } catch (_) {}
+      window.syncSTTSetting('stt_enabled', on ? 'true' : 'false');
       sttEnabled = on;
       if (on) {
         startVAD();
@@ -323,20 +338,20 @@ function wireDropdownEvents() {
 
   if (prov) {
     prov.addEventListener('change', function() {
-      try { localStorage.setItem('stt_provider', this.value); } catch (_) {}
+      window.syncSTTSetting('stt_provider', this.value);
     });
   }
 
   if (mode) {
     mode.addEventListener('change', function() {
-      try { localStorage.setItem('stt_mode', this.value); } catch (_) {}
+      window.syncSTTSetting('stt_mode', this.value);
     });
   }
 
   if (silence && silenceLabel) {
     silence.addEventListener('input', function() {
       silenceLabel.textContent = this.value + 'ms';
-      try { localStorage.setItem('stt_silence_ms', this.value); } catch (_) {}
+      window.syncSTTSetting('stt_silence_ms', this.value);
     });
   }
 }
