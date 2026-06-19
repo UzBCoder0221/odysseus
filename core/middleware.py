@@ -118,9 +118,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 f"script-src 'self' 'nonce-{nonce}' https://cdn.jsdelivr.net; "
                 "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
                 "font-src 'self' https://cdn.jsdelivr.net; "
-                "img-src 'self' data: blob:; "
-                "media-src 'self' blob:; "
-                "connect-src 'self'; "
+                "img-src 'self' data: blob: https://i.ytimg.com; "
+                "media-src 'self' blob: https://*.googlevideo.com; "
+                "connect-src 'self' https://*.googlevideo.com; "
                 "frame-src 'self'; "
                 "frame-ancestors 'none'"
             )

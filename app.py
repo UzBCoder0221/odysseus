@@ -186,7 +186,7 @@ if AUTH_ENABLED:
         "/api/companion/sysinfo/downloads/source",
         "/login",
     }
-    AUTH_EXEMPT_PREFIXES = ["/static"]
+    AUTH_EXEMPT_PREFIXES = ["/static", "/api/music"]
     # Dynamic paths whose own handler proves identity via a path-embedded
     # secret instead of the session/bearer auth. The route handler at
     # routes/task_routes.py validates the per-task `webhook_token` itself
@@ -637,6 +637,11 @@ stt_service = get_stt_service()
 from routes.stt_routes import setup_stt_routes
 app.include_router(setup_stt_routes(stt_service))
 logger.info("STT service initialized (provider managed via settings)")
+
+# Music (lazy init — don't block startup)
+from routes.music_routes import setup_music_routes
+app.include_router(setup_music_routes())
+logger.info("Music routes mounted (service initializes on first request)")
 
 # Eagerly load the STT model at startup so first transcription isn't slow.
 try:

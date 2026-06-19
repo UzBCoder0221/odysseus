@@ -55,3 +55,6 @@ edge-tts
 httpx2
 # Speech-to-Text (local faster-whisper)
 faster-whisper
+# Music — YouTube Music search (ytmusicapi) + audio stream extraction (yt-dlp)
+ytmusicapi
+yt-dlp

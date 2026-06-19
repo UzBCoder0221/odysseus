@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SEVEN.FM — Music Player Demo</title>
+  <link rel="stylesheet" href="css/music-player.css">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #050010;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+    }
+    #player-root {
+      width: 900px;
+      max-width: 95vw;
+    }
+    .search-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      width: 900px;
+      max-width: 95vw;
+    }
+    .search-bar input {
+      flex: 1;
+      background: #140828;
+      border: 1px solid #2a1050;
+      color: #e0d0ff;
+      padding: 10px 14px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      outline: none;
+      border-radius: 2px;
+    }
+    .search-bar input:focus { border-color: #b44aff; }
+    .search-bar button {
+      background: #b44aff;
+      border: none;
+      color: #0a0014;
+      padding: 10px 20px;
+      font-family: 'Arial Black', sans-serif;
+      font-size: 12px;
+      letter-spacing: 2px;
+      cursor: pointer;
+      text-transform: uppercase;
+    }
+    .search-bar button:hover { background: #ff4ad0; }
+    .results {
+      width: 900px;
+      max-width: 95vw;
+      max-height: 200px;
+      overflow-y: auto;
+      margin-top: 8px;
+      border: 1px solid #2a1050;
+      background: #0f0520;
+    }
+    .results:empty { display: none; }
+    .result-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      cursor: pointer;
+      border-bottom: 1px solid #1a0a30;
+      color: #e0d0ff;
+      font-size: 13px;
+    }
+    .result-item:hover { background: #1a0a30; }
+    .result-item img {
+      width: 40px; height: 40px; object-fit: cover;
+    }
+    .result-item .title { flex: 1; color: #e0d0ff; }
+    .result-item .artist { color: #b44aff; min-width: 120px; }
+    .result-item .dur { color: #604090; min-width: 50px; text-align: right; }
+  </style>
+</head>
+<body>
+  <div class="search-bar">
+    <input type="text" id="search-input" placeholder="Search YouTube Music..." />
+    <button id="search-btn">Search</button>
+  </div>
+  <div id="player-root"></div>
+  <div class="results" id="results"></div>
+  <script type="module" src="js/music-player-demo.js"></script>
+</body>
+</html>
