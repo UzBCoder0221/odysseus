@@ -1731,7 +1731,8 @@ body.bg-pattern-sparkles {
       border-radius: 4px;
       transition: background 0.08s, border-color 0.08s, color 0.08s, opacity 0.08s;
     }
-    input:hover, textarea:hover, button:hover, select:hover {
+    input[type="checkbox"]:hover { border-color: transparent !important; background: transparent !important; }
+input:hover, textarea:hover, button:hover, select:hover {
       border-color: var(--fg);
       background-color: var(--panel);
     }

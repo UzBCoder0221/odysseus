@@ -24,6 +24,7 @@ import galleryModule from './js/gallery.js';
 import tasksModule from './js/tasks.js';
 import calendarModule from './js/calendar.js';
 import notesModule from './js/notes.js';
+import goalsModule from './js/goals.js';
 import adminModule from './js/admin.js';
 import settingsModule from './js/settings.js';
 // Eagerly bind unified minimize/restore behavior across all tool modals.
@@ -872,6 +873,16 @@ function initializeEventListeners() {
       if (!Modals.toggle('gallery-modal')) {
         if (galleryModule.isGalleryOpen()) galleryModule.closeGallery();
         else galleryModule.openGallery();
+      }
+    });
+  }
+
+  // Goals tool button
+  const toolGoalsBtn = el('tool-goals-btn');
+  if (toolGoalsBtn) {
+    toolGoalsBtn.addEventListener('click', () => {
+      if (goalsModule) {
+        goalsModule.isGoalsOpen() ? goalsModule.closeGoals() : goalsModule.openGoals();
       }
     });
   }

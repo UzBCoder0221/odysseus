@@ -56,13 +56,19 @@ def token_owner(request: Request) -> str | None:
     Cookie sessions resolve to the logged-in username via get_current_user.
     Bearer-token callers come through as the sandboxed pseudo-user "api"; their
     real owner is stamped on request.state.api_token_owner by the auth
-    middleware. Returns None when no owner can be resolved.
+    middleware. When AUTH_ENABLED=false, returns "" (empty = default owner),
+    matching require_user() in auth_helpers. Returns None when no owner can
+    be resolved.
     """
     if getattr(request.state, "api_token", False):
         return getattr(request.state, "api_token_owner", None)
     owner = get_current_user(request)
-    _record_active_user(owner)
-    return owner
+    if owner is not None:
+        _record_active_user(owner)
+        return owner
+    if os.getenv("AUTH_ENABLED", "true").lower() == "false":
+        return ""
+    return None
 
 
 def owner_can_see(row_owner, owner) -> bool:
@@ -229,10 +235,10 @@ def detect_patterns(owner):
 def _resolve_companion_endpoint(owner=None):
     """Resolve (url, model, headers) for companion AI calls.
 
-    Reads default_endpoint_id from settings, queries the ModelEndpoint,
-    and always picks the first chat-capable model from its cached_models
-    list — ignoring any embedding/TTS/utility model that may be stored in
-    default_model.
+    1. Try the default_endpoint_id from settings (current behaviour).
+    2. If that fails, fall back to the first enabled endpoint that
+       has chat-capable models — makes it work whether the default
+       points to a local or Docker endpoint.
     """
     import json as _json
     try:
@@ -241,40 +247,56 @@ def _resolve_companion_endpoint(owner=None):
     except Exception:
         settings = {}
     ep_id = settings.get("default_endpoint_id", "")
-    if not ep_id:
-        return None, None, None
 
     from core.database import SessionLocal, ModelEndpoint
     from src.endpoint_resolver import resolve_endpoint_runtime, build_chat_url, build_headers, _first_chat_model
 
-    db = SessionLocal()
-    try:
-        q = db.query(ModelEndpoint).filter(
-            ModelEndpoint.id == ep_id,
-            ModelEndpoint.is_enabled == True
-        )
-        if owner:
-            from src.auth_helpers import owner_filter
-            q = owner_filter(q, ModelEndpoint, owner)
-        ep = q.first()
-        if not ep:
-            return None, None, None
-
+    def _from_ep(ep):
         base, api_key = resolve_endpoint_runtime(ep, owner=owner)
         url = build_chat_url(base)
         headers = build_headers(api_key, base)
-
         models = _json.loads(ep.cached_models) if ep.cached_models else []
         _NON_CHAT_EXTRA = ("embed",)
-        chat_models = [
-            m for m in models
-            if not any(p in str(m).lower() for p in _NON_CHAT_EXTRA)
-        ]
+        chat_models = [m for m in models if not any(p in str(m).lower() for p in _NON_CHAT_EXTRA)]
         model = _first_chat_model(chat_models) or _first_chat_model(models) or ""
         if not model:
             return None, None, None
-
         return url, model, headers
+
+    db = SessionLocal()
+    try:
+        # 1. Try the configured default endpoint
+        if ep_id:
+            q = db.query(ModelEndpoint).filter(
+                ModelEndpoint.id == ep_id,
+                ModelEndpoint.is_enabled == True
+            )
+            if owner:
+                from src.auth_helpers import owner_filter
+                q = owner_filter(q, ModelEndpoint, owner)
+            ep = q.first()
+            if ep:
+                try:
+                    url, model, headers = _from_ep(ep)
+                    if url and model:
+                        return url, model, headers
+                except Exception:
+                    pass
+
+        # 2. Fall back to any enabled endpoint with chat models
+        q2 = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)
+        if owner:
+            from src.auth_helpers import owner_filter
+            q2 = owner_filter(q2, ModelEndpoint, owner)
+        for ep in q2.all():
+            try:
+                url, model, headers = _from_ep(ep)
+                if url and model:
+                    return url, model, headers
+            except Exception:
+                continue
+
+        return None, None, None
     except Exception:
         return None, None, None
     finally:
@@ -1491,7 +1513,7 @@ def setup_companion_routes() -> APIRouter:
         from core.database import SessionLocal, CompanionTask
 
         owner = token_owner(request)
-        if not owner:
+        if owner is None:
             return {"tasks": []}
         date = request.query_params.get("date", "")
         db = SessionLocal()
@@ -1502,6 +1524,15 @@ def setup_companion_routes() -> APIRouter:
             if date:
                 q = q.filter(CompanionTask.date == date)
             rows = q.order_by(CompanionTask.sort_order).all()
+
+            # Batch-load milestone titles for linked tasks
+            from core.database import Milestone
+            ms_ids = [r.milestone_id for r in rows if r.milestone_id]
+            ms_map = {}
+            if ms_ids:
+                for ms in db.query(Milestone).filter(Milestone.id.in_(ms_ids)).all():
+                    ms_map[ms.id] = ms.title
+
             tasks = []
             for row in rows:
                 sub = []
@@ -1527,6 +1558,8 @@ def setup_companion_routes() -> APIRouter:
                     "reminder_sent_due": row.reminder_sent_due or False,
                     "started_at": row.started_at.isoformat() if row.started_at else "",
                     "last_progress_check_ts": row.last_progress_check_ts.isoformat() if row.last_progress_check_ts else "",
+                    "milestone_id": row.milestone_id,
+                    "milestone_title": ms_map.get(row.milestone_id),
                 })
             return {"tasks": tasks}
         finally:
@@ -1539,7 +1572,7 @@ def setup_companion_routes() -> APIRouter:
 
         body = await request.json()
         owner = token_owner(request)
-        if not owner:
+        if owner is None:
             return {"ok": False}
         db = SessionLocal()
         try:

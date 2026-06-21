@@ -753,9 +753,66 @@ class CompanionTask(TimestampMixin, Base):
     last_progress_check_ts = Column(DateTime, nullable=True)
     started_at = Column(DateTime, nullable=True)
 
+    # Stage 8 — Optional link to Milestone
+    milestone_id = Column(String, nullable=True, index=True)
+
     __table_args__ = (
         Index('ix_companion_tasks_date_owner', 'date', 'owner'),
     )
+
+
+class Goal(TimestampMixin, Base):
+    """A user goal — top-level container for milestones."""
+    __tablename__ = "goals"
+
+    id          = Column(String, primary_key=True, index=True)
+    owner       = Column(String, nullable=True, index=True)
+    title       = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    target_date = Column(String, nullable=True)  # YYYY-MM-DD
+    status      = Column(String, default="active")  # active / paused / completed / abandoned
+    updated_at  = Column(DateTime, nullable=True)
+    sort_order  = Column(Integer, default=0)
+
+
+class Milestone(TimestampMixin, Base):
+    """A milestone within a goal."""
+    __tablename__ = "milestones"
+
+    id          = Column(String, primary_key=True, index=True)
+    goal_id     = Column(String, nullable=False, index=True)
+    title       = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    target_date = Column(String, nullable=True)  # YYYY-MM-DD
+    status      = Column(String, default="pending")  # pending / in_progress / completed
+    sort_order  = Column(Integer, default=0)
+
+
+class GoalResearchConfig(TimestampMixin, Base):
+    """Per-goal research configuration — one row per goal, created lazily."""
+    __tablename__ = "goal_research_config"
+
+    id                      = Column(String, primary_key=True, index=True)
+    goal_id                 = Column(String, ForeignKey("goals.id"), nullable=False, unique=True, index=True)
+    trigger_mode            = Column(String, default="manual")    # manual / scheduled / idle
+    scheduled_time          = Column(String, nullable=True)       # HH:MM
+    idle_threshold_minutes  = Column(Integer, nullable=True)
+    depth                   = Column(String, default="moderate")  # light / moderate
+    digest_frequency        = Column(String, default="manual")    # manual / daily / weekly
+    enabled                 = Column(Boolean, default=False)       # opt-in per goal
+    last_run_at             = Column(DateTime, nullable=True)
+
+
+class GoalResearchResult(TimestampMixin, Base):
+    """Research output for a goal — the review queue."""
+    __tablename__ = "goal_research_results"
+
+    id          = Column(String, primary_key=True, index=True)
+    goal_id     = Column(String, ForeignKey("goals.id"), nullable=False, index=True)
+    summary     = Column(Text, nullable=False)
+    source_notes = Column(Text, nullable=True)
+    status      = Column(String, default="pending")  # pending / accepted / discarded
+    reviewed_at = Column(DateTime, nullable=True)
 
 
 class CompanionLifestyle(TimestampMixin, Base):
@@ -1954,6 +2011,148 @@ def init_db():
     _migrate_backfill_task_folders()
     _migrate_create_companion_lifestyle_table()
     _migrate_add_companion_stage_sysinfo()
+    _migrate_stage8_goals()
+    _migrate_stage8c_research()
+
+
+def _migrate_stage8_goals():
+    """Stage 8 — create goals + milestones tables and add milestone_id to companion_tasks."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(goals)")
+        goals_cols = [row[1] for row in cursor.fetchall()]
+        if not goals_cols:
+            conn.execute("""
+                CREATE TABLE goals (
+                    id VARCHAR NOT NULL,
+                    owner VARCHAR,
+                    title VARCHAR(200) NOT NULL,
+                    description TEXT,
+                    target_date VARCHAR,
+                    status VARCHAR DEFAULT 'active',
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    sort_order INTEGER DEFAULT 0,
+                    PRIMARY KEY (id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_goals_owner ON goals (owner)")
+            logging.getLogger(__name__).info("Migrated: created goals table")
+        else:
+            logging.getLogger(__name__).info("Goals table already exists, skipping")
+
+        cursor = conn.execute("PRAGMA table_info(milestones)")
+        ms_cols = [row[1] for row in cursor.fetchall()]
+        if not ms_cols:
+            conn.execute("""
+                CREATE TABLE milestones (
+                    id VARCHAR NOT NULL,
+                    goal_id VARCHAR NOT NULL,
+                    title VARCHAR(200) NOT NULL,
+                    description TEXT,
+                    target_date VARCHAR,
+                    status VARCHAR DEFAULT 'pending',
+                    sort_order INTEGER DEFAULT 0,
+                    created_at DATETIME,
+                    PRIMARY KEY (id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_milestones_goal_id ON milestones (goal_id)")
+            logging.getLogger(__name__).info("Migrated: created milestones table")
+        else:
+            logging.getLogger(__name__).info("Milestones table already exists, skipping")
+
+        cursor = conn.execute("PRAGMA table_info(companion_tasks)")
+        ct_cols = [row[1] for row in cursor.fetchall()]
+        if "milestone_id" not in ct_cols:
+            conn.execute("ALTER TABLE companion_tasks ADD COLUMN milestone_id VARCHAR")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_companion_tasks_milestone_id ON companion_tasks (milestone_id)")
+            logging.getLogger(__name__).info("Migrated: added milestone_id to companion_tasks")
+        else:
+            logging.getLogger(__name__).info("milestone_id already exists on companion_tasks, skipping")
+
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"stage 8 goals migration failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def _migrate_stage8c_research():
+    """Stage 8C — create goal_research_config + goal_research_results tables."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+
+        cursor = conn.execute("PRAGMA table_info(goal_research_config)")
+        cols = [row[1] for row in cursor.fetchall()]
+        if not cols:
+            conn.execute("""
+                CREATE TABLE goal_research_config (
+                    id VARCHAR NOT NULL,
+                    goal_id VARCHAR NOT NULL,
+                    trigger_mode VARCHAR DEFAULT 'manual',
+                    scheduled_time VARCHAR,
+                    idle_threshold_minutes INTEGER,
+                    depth VARCHAR DEFAULT 'moderate',
+                    digest_frequency VARCHAR DEFAULT 'manual',
+                    enabled BOOLEAN DEFAULT 0,
+                    last_run_at DATETIME,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    PRIMARY KEY (id),
+                    FOREIGN KEY (goal_id) REFERENCES goals(id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_goal_research_config_goal_id ON goal_research_config (goal_id)")
+            logging.getLogger(__name__).info("Migrated: created goal_research_config table")
+        else:
+            logging.getLogger(__name__).info("goal_research_config table already exists, skipping")
+
+        cursor = conn.execute("PRAGMA table_info(goal_research_results)")
+        cols = [row[1] for row in cursor.fetchall()]
+        if not cols:
+            conn.execute("""
+                CREATE TABLE goal_research_results (
+                    id VARCHAR NOT NULL,
+                    goal_id VARCHAR NOT NULL,
+                    summary TEXT NOT NULL,
+                    source_notes TEXT,
+                    status VARCHAR DEFAULT 'pending',
+                    reviewed_at DATETIME,
+                    created_at DATETIME,
+                    PRIMARY KEY (id),
+                    FOREIGN KEY (goal_id) REFERENCES goals(id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_goal_research_results_goal_id ON goal_research_results (goal_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_goal_research_results_status ON goal_research_results (status)")
+            logging.getLogger(__name__).info("Migrated: created goal_research_results table")
+        else:
+            logging.getLogger(__name__).info("goal_research_results table already exists, skipping")
+
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"stage 8c research migration failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 
 def _migrate_add_companion_stage_sysinfo():

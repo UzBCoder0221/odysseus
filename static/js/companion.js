@@ -1063,6 +1063,8 @@ function renderTaskItem(task, idx) {
   if (task.estimated_minutes) html += '<span style="font-size:10px;opacity:0.4;flex-shrink:0;">' + task.estimated_minutes + 'm</span>';
   if (task.due_time) html += '<span style="font-size:10px;opacity:0.4;flex-shrink:0;font-family:monospace;">⏰' + esc(task.due_time) + '</span>';
   if (task.carried_over) html += '<span style="font-size:9px;opacity:0.4;flex-shrink:0;">↻</span>';
+  if (task.milestone_title) html += '<span style="font-size:9px;opacity:0.6;flex-shrink:0;background:var(--accent,#5b9);color:var(--accent-text,#fff);border-radius:3px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + esc(task.milestone_title) + '">🏁' + esc(task.milestone_title) + '</span>';
+  html += '<span class="companion-task-link" data-task-id="' + task.id + '" style="cursor:pointer;font-size:11px;opacity:0.35;min-height:32px;display:inline-flex;align-items:center;" title="Link to milestone">🔗</span>';
   if (idx >= 0) {
     html += '<span class="companion-task-up" data-idx="' + idx + '" style="cursor:pointer;font-size:12px;opacity:0.3;min-height:32px;display:inline-flex;align-items:center;">▲</span>';
     html += '<span class="companion-task-down" data-idx="' + idx + '" style="cursor:pointer;font-size:12px;opacity:0.3;min-height:32px;display:inline-flex;align-items:center;">▼</span>';
@@ -1635,6 +1637,91 @@ function showStage3Panel() {
   if (body) setTimeout(() => body.scrollTop = body.scrollHeight, 100);
 }
 
+/* ── Task-milestone linking ── */
+
+async function showTaskLinkPicker(taskId) {
+  /* Fetch all goals */
+  let goals;
+  try {
+    const res = await fetch('/api/goals/goals');
+    const data = await res.json();
+    goals = data.goals || [];
+  } catch (e) {
+    alert('Failed to load goals');
+    return;
+  }
+
+  /* Fetch milestones for each goal */
+  const groups = [];
+  for (const g of goals) {
+    try {
+      const res = await fetch(`/api/goals/goals/${g.id}`);
+      const data = await res.json();
+      const ms = (data.milestones || []).filter(m => m.status !== 'completed');
+      if (ms.length > 0) groups.push({ goalTitle: g.title, milestones: ms });
+    } catch (_) {}
+  }
+
+  /* Build popup */
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10000;display:flex;align-items:center;justify-content:center;';
+  let html = '<div style="background:var(--surface,#222);border:1px solid var(--border,#444);border-radius:12px;padding:16px;width:400px;max-width:90vw;max-height:80vh;overflow-y:auto;">';
+  html += '<h4 style="margin:0 0 12px 0;">Link Task to Milestone</h4>';
+
+  if (groups.length === 0) {
+    html += '<p style="opacity:0.6;">No milestones available. Create milestones in a goal first.</p>';
+  } else {
+    for (const g of groups) {
+      html += '<div style="font-weight:600;font-size:12px;margin:8px 0 4px 0;opacity:0.7;">' + esc(g.goalTitle) + '</div>';
+      for (const m of g.milestones) {
+        html += '<div class="companion-milestone-opt" data-task-id="' + taskId + '" data-ms-id="' + m.id + '" style="padding:6px 10px;cursor:pointer;border-radius:4px;font-size:13px;transition:background .1s;">' + esc(m.title) + '</div>';
+      }
+    }
+  }
+
+  html += '<hr style="border-color:var(--border,#444);margin:12px 0;">';
+  html += '<div style="display:flex;justify-content:space-between;">';
+  html += '<button class="companion-link-unlink" data-task-id="' + taskId + '" style="background:none;border:1px solid var(--border,#444);border-radius:6px;cursor:pointer;padding:6px 12px;font-size:12px;color:var(--danger,#c44);">None (unlink)</button>';
+  html += '<button class="companion-link-cancel" style="background:none;border:1px solid var(--border,#444);border-radius:6px;cursor:pointer;padding:6px 12px;font-size:12px;">Cancel</button>';
+  html += '</div></div>';
+  overlay.innerHTML = html;
+  document.body.appendChild(overlay);
+
+  /* Event handlers */
+  overlay.addEventListener('click', async e => {
+    const opt = e.target.closest('.companion-milestone-opt');
+    if (opt) {
+      await setTaskMilestone(taskId, opt.dataset.msId);
+      overlay.remove();
+      return;
+    }
+    if (e.target.matches('.companion-link-unlink')) {
+      await setTaskMilestone(taskId, null);
+      overlay.remove();
+      return;
+    }
+    if (e.target.closest('.companion-link-cancel') || e.target === overlay) {
+      overlay.remove();
+    }
+  });
+}
+
+async function setTaskMilestone(taskId, msId) {
+  try {
+    const res = await fetch('/api/goals/companion/tasks/' + taskId + '/link-milestone', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ milestone_id: msId })
+    });
+    if (!res.ok) { console.error('Link-milestone PATCH failed'); return; }
+  } catch (e) {
+    console.error('Failed to link milestone', e);
+    return;
+  }
+  await fetchTasksFromBackend();
+  renderTaskList();
+}
+
 /* ── Init ── */
 function init() {
   carryOverTasks();
@@ -2054,6 +2141,13 @@ function init() {
         return;
       }
 
+      /* Link milestone */
+      if (target.matches('.companion-task-link')) {
+        const taskId = target.dataset.taskId || target.closest('[data-task-id]')?.dataset.taskId;
+        if (taskId) showTaskLinkPicker(taskId);
+        return;
+      }
+
       /* AI breakdown */
       if (target.matches('.companion-task-breakdown')) {
         const taskId = target.dataset.taskId;
@@ -2144,6 +2238,7 @@ const CompanionModule = {
   loadChatMessages,
   saveChatMessages,
   clearChatMessages,
+  showTaskLinkPicker,
 };
 
 export default CompanionModule;

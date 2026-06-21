@@ -140,6 +140,7 @@ _TIMEOUT_EXEMPT_PREFIXES = (
     "/api/cookbook/setup",  # remote pacman/apt installs
     "/api/upload",          # large files
     "/api/image",           # diffusion proxies (inpaint/harmonize/upscale/etc.) — own 120s httpx timeout
+    "/api/goals",           # goal decomposition calls LLM which may take 30-60s
 )
 
 
@@ -765,6 +766,9 @@ app.include_router(setup_contacts_routes())
 
 from companion import setup_companion_routes
 app.include_router(setup_companion_routes())
+
+from goals import setup_goals_routes
+app.include_router(setup_goals_routes())
 
 # ========= ROUTES (kept in app.py) =========
 
