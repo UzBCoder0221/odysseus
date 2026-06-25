@@ -74,6 +74,7 @@ function _renderDetail(goal, milestones, researchCfg, researchResults) {
           </div>
         </div>
         <div style="display:flex;gap:4px;flex-shrink:0;">
+          <button data-action="ask-about-milestone" data-ms-id="${m.id}" style="background:none;border:1px solid var(--accent);border-radius:4px;cursor:pointer;padding:2px 8px;font-size:12px;color:var(--accent);">💬 Ask</button>
           <button data-action="edit-milestone" data-ms-id="${m.id}" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;padding:2px 8px;font-size:12px;">Edit</button>
           <button data-action="delete-milestone" data-ms-id="${m.id}" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;padding:2px 8px;font-size:12px;color:var(--danger,#c44);">✕</button>
         </div>
@@ -137,6 +138,7 @@ function _renderDetail(goal, milestones, researchCfg, researchResults) {
           </div>
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button data-action="ask-about-goal" style="background:none;border:1px solid var(--accent);border-radius:6px;cursor:pointer;padding:6px 14px;font-size:13px;color:var(--accent);">💬 Ask about this</button>
           <button data-action="edit-goal" style="background:var(--accent);color:var(--accent-text,#fff);border:none;border-radius:6px;cursor:pointer;padding:6px 14px;font-size:13px;">Edit</button>
           <button data-action="ai-suggest-milestones" style="background:none;border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:6px 14px;font-size:13px;color:var(--accent);">AI: Suggest Milestones</button>
         </div>
@@ -185,6 +187,10 @@ function _renderResearchResults(results, goalId) {
         html += '<div style="display:flex;gap:6px;margin-top:4px;">';
         html += '<button data-action="accept-research" data-result-id="' + r.id + '" style="background:var(--accent,#5b9);color:var(--accent-text,#fff);border:none;border-radius:4px;cursor:pointer;padding:3px 10px;font-size:11px;">✓ Accept</button>';
         html += '<button data-action="discard-research" data-result-id="' + r.id + '" style="background:none;border:1px solid var(--border,#444);border-radius:4px;cursor:pointer;padding:3px 10px;font-size:11px;color:var(--text);">✕ Discard</button>';
+        html += '</div>';
+      } else if (r.status === 'accepted') {
+        html += '<div style="margin-top:4px;">';
+        html += '<button data-action="convert-research" data-result-id="' + r.id + '" style="background:none;border:1px solid var(--accent,#5b9);border-radius:4px;cursor:pointer;padding:3px 10px;font-size:11px;color:var(--accent,#5b9);">🔄 Convert to Milestones</button>';
         html += '</div>';
       }
       html += '</div>';
@@ -241,7 +247,14 @@ function _close() {
   _open = false;
   _viewingGoalId = null;
   const modal = document.getElementById('goals-modal');
-  if (modal) modal.remove();
+  if (modal) {
+    // Use class-based hide (matching Tasks/Notes/Calendar pattern). The
+    // centralized dock system (app.js:2885 MutationObserver) watches for
+    // 'hidden' + !'minimized' to clean up minimized dock entries — removing
+    // 'minimized' first ensures the observer fires the cleanup handler.
+    modal.classList.remove('minimized');
+    modal.classList.add('hidden');
+  }
   if (_escHandler) {
     document.removeEventListener('keydown', _escHandler);
     _escHandler = null;
@@ -302,6 +315,12 @@ function _setupClickDelegation() {
         case 'ai-suggest-milestones':
           await _showAISuggestions();
           break;
+        case 'ask-about-goal':
+          if (_viewingGoalId) await _chatAboutGoal(_viewingGoalId);
+          break;
+        case 'ask-about-milestone':
+          if (_viewingGoalId && target.dataset.msId) await _chatAboutMilestone(_viewingGoalId, target.dataset.msId);
+          break;
         case 'research-toggle':
           // Instant toggle — auto-saves the enabled state
           await _saveResearchCfg({ enabled: target.checked });
@@ -317,6 +336,9 @@ function _setupClickDelegation() {
           break;
         case 'discard-research':
           if (target.dataset.resultId) await _reviewResearch(target.dataset.resultId, 'discarded');
+          break;
+        case 'convert-research':
+          if (target.dataset.resultId) await _convertResearch(target.dataset.resultId);
           break;
         case 'research-trigger':
           // Show/hide conditional fields when trigger mode changes
@@ -488,6 +510,98 @@ async function _reviewResearch(resultId, status) {
   }
 }
 
+async function _convertResearch(resultId) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:10000;display:flex;align-items:center;justify-content:center;';
+  overlay.innerHTML = '<div style="background:var(--surface,#222);border:1px solid var(--border,#444);border-radius:12px;padding:32px;text-align:center;"><div style="font-size:24px;margin-bottom:12px;">⏳</div><div style="font-weight:600;">Generating milestone suggestions...</div><div style="font-size:12px;opacity:0.6;margin-top:6px;">Using research findings to propose milestones</div></div>';
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', e => {
+    if (e.target.closest('.ai-suggestion-cancel') || e.target === overlay) {
+      overlay.remove();
+    }
+  });
+
+  let suggestions;
+  try {
+    const res = await _api('/research-results/' + resultId + '/convert', {
+      method: 'POST',
+    });
+    if (res.error) {
+      overlay.innerHTML = '<div style="background:var(--surface,#222);border:1px solid var(--border,#444);border-radius:12px;padding:32px;text-align:center;"><div style="font-size:24px;margin-bottom:12px;">❌</div><div style="font-weight:600;color:var(--danger,#c44);">Conversion Error</div><div style="font-size:12px;opacity:0.6;margin-top:6px;">' + _esc(res.error) + '</div><button class="ai-suggestion-cancel" style="margin-top:16px;background:none;border:1px solid var(--border,#444);border-radius:6px;cursor:pointer;padding:6px 14px;font-size:13px;">Close</button></div>';
+      return;
+    }
+    suggestions = res.suggestions || [];
+  } catch (e) {
+    overlay.innerHTML = '<div style="background:var(--surface,#222);border:1px solid var(--border,#444);border-radius:12px;padding:32px;text-align:center;"><div style="font-size:24px;margin-bottom:12px;">❌</div><div style="font-weight:600;color:var(--danger,#c44);">Request Failed</div><div style="font-size:12px;opacity:0.6;margin-top:6px;">' + _esc(e.message) + '</div><button class="ai-suggestion-cancel" style="margin-top:16px;background:none;border:1px solid var(--border,#444);border-radius:6px;cursor:pointer;padding:6px 14px;font-size:13px;">Close</button></div>';
+    return;
+  }
+
+  if (suggestions.length === 0) {
+    overlay.innerHTML = '<div style="background:var(--surface,#222);border:1px solid var(--border,#444);border-radius:12px;padding:32px;text-align:center;"><div style="font-size:24px;margin-bottom:12px;">📭</div><div style="font-weight:600;">No Suggestions</div><div style="font-size:12px;opacity:0.6;margin-top:6px;">Research did not produce any milestone suggestions.</div><button class="ai-suggestion-cancel" style="margin-top:16px;background:none;border:1px solid var(--border,#444);border-radius:6px;cursor:pointer;padding:6px 14px;font-size:13px;">Close</button></div>';
+    return;
+  }
+
+  const goalId = _viewingGoalId;
+  if (goalId) {
+    _showSuggestionUI(goalId, suggestions, overlay, 'Research');
+  }
+}
+
+// ─── Chat about goal/milestone ─────────────────────────────────────────
+
+async function _chatApi(path) {
+  const res = await fetch(`${API_BASE}/api${path}`, {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json()).detail || ''; } catch {}
+    throw new Error(detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+async function _chatAboutGoal(goalId) {
+  try {
+    const payload = await _chatApi(`/goals/goals/${goalId}/chat`);
+    if (!payload.session_id) throw new Error('No session_id returned');
+    if (window.sessionModule?.loadSessions) {
+      await window.sessionModule.loadSessions().catch(() => {});
+    }
+    // Use selectSession — same function the sidebar's session click handler
+    // calls (sessions.js createSessionItem line 441). It fetches history via
+    // /api/history/{id} and renders messages into chat-history.
+    await window.sessionModule.selectSession(payload.session_id);
+    // Minimize instead of fully closing — the user can restore from the dock
+    const Modals = await import('./modalManager.js');
+    Modals.minimize('goals-modal');
+  } catch (e) {
+    console.error('Chat about goal failed:', e);
+    // Restore button state — do not silently fail
+    document.querySelectorAll('[data-action="ask-about-goal"], [data-action="ask-about-milestone"]')
+      .forEach(btn => { if (btn) btn.disabled = false; });
+  }
+}
+
+async function _chatAboutMilestone(goalId, milestoneId) {
+  try {
+    const payload = await _chatApi(`/goals/goals/${goalId}/milestones/${milestoneId}/chat`);
+    if (!payload.session_id) throw new Error('No session_id returned');
+    if (window.sessionModule?.loadSessions) {
+      await window.sessionModule.loadSessions().catch(() => {});
+    }
+    await window.sessionModule.selectSession(payload.session_id);
+    const Modals = await import('./modalManager.js');
+    Modals.minimize('goals-modal');
+  } catch (e) {
+    console.error('Chat about milestone failed:', e);
+    document.querySelectorAll('[data-action="ask-about-goal"], [data-action="ask-about-milestone"]')
+      .forEach(btn => { if (btn) btn.disabled = false; });
+  }
+}
+
 export function openGoals() {
   if (_open) return;
   _open = true;
@@ -497,6 +611,15 @@ export function openGoals() {
   if (modal) modal.classList.remove('hidden');
   _setupClickDelegation();
   _fetchAndRender();
+
+  // Register with Modals so minimize/dock works
+  import('./modalManager.js').then(Modals => {
+    if (!Modals.isRegistered('goals-modal')) {
+      Modals.register('goals-modal', {
+        closeFn: () => _close(),
+      });
+    }
+  }).catch(() => {});
 
   _escHandler = e => { if (e.key === 'Escape') _close(); };
   document.addEventListener('keydown', _escHandler);
@@ -844,27 +967,35 @@ async function _showAISuggestions() {
     return;
   }
 
-  // ── Build editable suggestion list ──
+  _showSuggestionUI(goalId, suggestions, overlay, 'AI');
+}
+
+/**
+ * Render editable milestone suggestion list into an existing overlay.
+ * Handles Add Selected → POST to /goals/{goalId}/milestones.
+ * Handles Remove individual suggestion.
+ * @param {string} goalId
+ * @param {Array} suggestions — array of {title, description, suggested_target_date}
+ * @param {HTMLElement} overlay — existing overlay element with dismiss listener
+ * @param {string} label — label for the heading (e.g. "AI" or "Research")
+ */
+function _showSuggestionUI(goalId, suggestions, overlay, label = 'AI') {
   const today = new Date().toISOString().slice(0, 10);
   let html = '<div style="background:var(--surface,#222);border:1px solid var(--border,#444);border-radius:12px;padding:20px;width:500px;max-width:90vw;max-height:85vh;overflow-y:auto;">';
-  html += '<h4 style="margin:0 0 4px 0;">AI-Suggested Milestones</h4>';
+  html += '<h4 style="margin:0 0 4px 0;">' + _esc(label) + '-Suggested Milestones</h4>';
   html += '<p style="margin:0 0 16px 0;font-size:12px;opacity:0.6;">Review and edit. Click <strong>Add Selected</strong> to create the checked milestones.</p>';
   html += '<div id="ai-suggestions-list">';
   suggestions.forEach((s, i) => {
-    // Validate date — reject past or invalid dates, leave blank
     let dateVal = (s.suggested_target_date || '').trim();
     if (dateVal) {
-      // Must be YYYY-MM-DD and in the future
       if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal) || dateVal <= today) {
         dateVal = '';
-        console.warn('Decompose suggestion #' + i + ' had invalid/past date, overriding to blank:', s.suggested_target_date);
+        console.warn('Suggestion #' + i + ' had invalid/past date, overriding to blank:', s.suggested_target_date);
       }
     }
-    // Ensure description is non-empty for display
     const desc = (s.description || '').trim();
     html += '<div class="ai-suggestion-item" data-idx="' + i + '" style="background:var(--input-bg,#333);border:1px solid var(--border,#444);border-radius:6px;padding:10px 12px;margin-bottom:8px;">';
     html += '<div style="display:flex;align-items:flex-start;gap:8px;">';
-    // Checkbox: no hover transform, box-sizing reserved
     html += '<input type="checkbox" class="ai-suggestion-check" data-idx="' + i + '" checked style="margin-top:3px;cursor:pointer;width:14px;height:14px;flex-shrink:0;box-sizing:border-box;border:1px solid transparent;">';
     html += '<div style="flex:1;min-width:0;">';
     html += '<input class="ai-suggestion-title" data-idx="' + i + '" value="' + _esc(s.title) + '" maxlength="80" style="width:100%;background:transparent;border:1px solid transparent;border-radius:4px;padding:2px 4px;font-weight:600;font-size:13px;color:var(--text,#eee);outline:none;box-sizing:border-box;" onfocus="this.style.borderColor=\'var(--border,#444)\'" onblur="this.style.borderColor=\'transparent\'">';
@@ -883,10 +1014,9 @@ async function _showAISuggestions() {
   html += '</div></div></div>';
   overlay.innerHTML = html;
 
-  // ── Success-specific handlers (dismiss is already handled by global listener) ──
   overlay.addEventListener('click', async e => {
     if (e.target.closest('.ai-suggestion-cancel') || e.target === overlay) {
-      return; // covered by global dismiss listener
+      return;
     }
 
     if (e.target.closest('.ai-suggestion-add')) {

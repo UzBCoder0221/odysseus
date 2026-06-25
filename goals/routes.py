@@ -21,6 +21,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Query
 
 from core.database import SessionLocal, Goal, Milestone, CompanionTask, GoalResearchConfig, GoalResearchResult
+from core.models import ChatMessage
 from src.auth_helpers import get_current_user
 
 _log = logging.getLogger(__name__)
@@ -119,6 +120,77 @@ def _resolve_llm_config(owner=None):
         return None, None, None
     finally:
         db.close()
+
+
+def _parse_json_suggestions(reply: str, max_items: int = 10) -> list[dict]:
+    """Defensive JSON parser for AI milestone suggestion responses.
+
+    Handles bare JSON arrays, markdown-fenced arrays, and objects with
+    a key containing an array. Returns validated list of
+    {title, description, suggested_target_date} dicts.
+    """
+    import re as _re
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    if not reply:
+        return []
+    text = reply.strip()
+    text = _re.sub(r"```[a-z]*\s*\n?", "", text).strip()
+    suggestions = None
+    # Try direct parse
+    try:
+        suggestions = json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Try extracting JSON array via regex
+    if suggestions is None or not isinstance(suggestions, list):
+        arr_match = _re.search(r'\[.*\]', text, _re.DOTALL)
+        if arr_match:
+            try:
+                suggestions = json.loads(arr_match.group())
+            except (json.JSONDecodeError, TypeError):
+                pass
+    # Try wrapped in a key like {"milestones": [...]}
+    if suggestions is None or not isinstance(suggestions, list):
+        try:
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                for val in obj.values():
+                    if isinstance(val, list):
+                        suggestions = val
+                        break
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    if not suggestions or not isinstance(suggestions, list):
+        return []
+
+    validated = []
+    for item in suggestions:
+        if not isinstance(item, dict):
+            continue
+        ms_title = item.get("title", "").strip()
+        if not ms_title or len(ms_title) > 80:
+            continue
+        ms_desc = item.get("description", "")
+        if not isinstance(ms_desc, str):
+            ms_desc = str(ms_desc) if ms_desc else ""
+        ms_desc = ms_desc.strip()[:200]
+        if not ms_desc:
+            _log.warning("Suggestion '%s' missing description", ms_title)
+        ms_date = item.get("suggested_target_date")
+        if ms_date is not None:
+            ms_date = str(ms_date).strip()[:10]
+            if ms_date in ("null", "None"):
+                ms_date = None
+        validated.append({
+            "title": ms_title[:80],
+            "description": ms_desc or None,
+            "suggested_target_date": ms_date,
+        })
+
+    return validated[:max_items]
 
 
 def _perform_research(goal_id: str, owner: str, title: str, description: str,
@@ -259,7 +331,7 @@ def _perform_research(goal_id: str, owner: str, title: str, description: str,
     return result_holder[0]
 
 
-def setup_goals_routes() -> APIRouter:
+def setup_goals_routes(session_manager=None) -> APIRouter:
     router = APIRouter(prefix="/api/goals", tags=["goals"])
 
     # ─── Goals ──────────────────────────────────────────────────────────
@@ -512,7 +584,14 @@ def setup_goals_routes() -> APIRouter:
             if "target_date" in body:
                 m.target_date = body["target_date"]
             if "status" in body:
-                m.status = body["status"]
+                new_status = body["status"]
+                # Track completion time: set when completed, clear when
+                # changed away from completed.
+                if new_status == "completed" and m.status != "completed":
+                    m.completed_at = datetime.now(timezone.utc)
+                elif new_status != "completed" and m.status == "completed":
+                    m.completed_at = None
+                m.status = new_status
             if "sort_order" in body:
                 m.sort_order = body["sort_order"]
             db.commit()
@@ -563,7 +642,6 @@ def setup_goals_routes() -> APIRouter:
         without writing anything to the database. The frontend shows these
         for review/editing before the user can choose to create them.
         """
-        import re as _re
         owner = token_owner(request)
         if owner is None:
             raise HTTPException(401, "Not authenticated")
@@ -612,66 +690,10 @@ def setup_goals_routes() -> APIRouter:
         if not reply:
             return {"error": "AI returned empty response", "suggestions": []}
 
-        # ── Defensive JSON parse ───────────────────────────────────────────
-        text = reply.strip()
-        text = _re.sub(r"```[a-z]*\s*\n?", "", text).strip()
-        suggestions = None
-        # Try direct parse
-        try:
-            suggestions = json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        # Try extracting JSON array via regex
-        if suggestions is None or not isinstance(suggestions, list):
-            arr_match = _re.search(r'\[.*\]', text, _re.DOTALL)
-            if arr_match:
-                try:
-                    suggestions = json.loads(arr_match.group())
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        # Try wrapped in a key like {"milestones": [...]}
-        if suggestions is None or not isinstance(suggestions, list):
-            try:
-                obj = json.loads(text)
-                if isinstance(obj, dict):
-                    for val in obj.values():
-                        if isinstance(val, list):
-                            suggestions = val
-                            break
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        if not suggestions or not isinstance(suggestions, list):
+        validated = _parse_json_suggestions(reply, max_items=10)
+        if not validated:
             return {"error": "Could not parse AI response", "suggestions": []}
-
-        # Validate each item — drop malformed entries
-        import logging as _logging
-        _log = _logging.getLogger(__name__)
-        validated = []
-        for item in suggestions:
-            if not isinstance(item, dict):
-                continue
-            ms_title = item.get("title", "").strip()
-            if not ms_title or len(ms_title) > 80:
-                continue
-            ms_desc = item.get("description", "")
-            if not isinstance(ms_desc, str):
-                ms_desc = str(ms_desc) if ms_desc else ""
-            ms_desc = ms_desc.strip()[:200]
-            if not ms_desc:
-                _log.warning("Decompose suggestion '%s' missing description — keeping it but frontend will prompt user", ms_title)
-            ms_date = item.get("suggested_target_date")
-            if ms_date is not None:
-                ms_date = str(ms_date).strip()[:10]
-                if ms_date in ("null", "None"):
-                    ms_date = None
-            validated.append({
-                "title": ms_title[:80],
-                "description": ms_desc or None,
-                "suggested_target_date": ms_date,
-            })
-
-        return {"suggestions": validated[:10]}
+        return {"suggestions": validated}
 
     # ─── Link CompanionTask to Milestone ─────────────────────────────────
 
@@ -873,6 +895,87 @@ def setup_goals_routes() -> APIRouter:
         finally:
             db.close()
 
+    @router.post("/research-results/{result_id}/convert")
+    async def convert_research_to_milestones(result_id: str, request: Request):
+        """Convert an accepted research result into milestone suggestions.
+
+        Loads the research summary + goal context, sends to LLM grounded
+        in the research findings, returns suggestions in the same shape
+        as /decompose ({title, description, suggested_target_date}[]).
+        Does NOT write to the database — this is suggest-only.
+        """
+        owner = token_owner(request)
+        if owner is None:
+            raise HTTPException(401, "Not authenticated")
+        db = SessionLocal()
+        try:
+            r = (
+                db.query(GoalResearchResult)
+                .join(Goal, GoalResearchResult.goal_id == Goal.id)
+                .filter(GoalResearchResult.id == result_id, Goal.owner == owner)
+                .first()
+            )
+            if not r:
+                raise HTTPException(404, "Research result not found")
+            # Load parent goal for context
+            goal = db.query(Goal).filter(Goal.id == r.goal_id).first()
+            goal_title = goal.title if goal else ""
+            goal_desc = goal.description if goal else ""
+        finally:
+            db.close()
+
+        # Only accepted results can be converted
+        if r.status != "accepted":
+            raise HTTPException(400, "Only accepted research results can be converted to milestones")
+
+        url, model, headers = _resolve_llm_config(owner)
+        if not url or not model:
+            return {"error": "No AI model configured", "suggestions": []}
+
+        system_prompt = (
+            "You are a project planner. Based on the research findings provided, "
+            "break the user's goal into concrete, actionable milestones. "
+            "Each milestone must be directly supported by or suggested by the research findings. "
+            "Return ONLY a JSON array of milestone objects. "
+            "No markdown fences, no explanation, no text outside the JSON array.\n\n"
+            "Each object MUST have:\n"
+            '  "title": short milestone name (max 80 chars)\n'
+            '  "description": brief 1-sentence description grounded in the research findings (max 200 chars). REQUIRED for every milestone — never blank.\n'
+            '  "suggested_target_date": YYYY-MM-DD or null. Only set this for milestones that are genuinely time-sensitive (e.g. a quit date, funding deadline, hard launch date) — leave null for milestones like "Track Progress" or "Review Results" that don\'t have a natural due date. ANY date given MUST be in the future relative to today.\n\n'
+            f"Today's date is {datetime.now(timezone.utc).strftime('%Y-%m-%d')}.\n\n"
+            "Guidelines:\n"
+            "- Choose 3-7 milestones based on the research complexity\n"
+            "- Do not exceed 10 milestones\n"
+            "- Order them in a natural progression (first to last)\n"
+            "- Every milestone must have a non-empty description grounded in the research\n"
+            "- Only suggest a target_date for genuinely time-sensitive milestones; prefer null otherwise\n"
+            "- Base your suggestions on what the research actually surfaced, not generic advice"
+        )
+        user_prompt = (
+            f"Goal: {goal_title}\n"
+            f"Description: {goal_desc}\n\n"
+            f"Research Findings:\n{r.summary}\n\n"
+            f"Based on these research findings, what milestones should be created for this goal?"
+        )
+
+        import re as _re
+        try:
+            from src.llm_core import llm_call_async
+            reply = await llm_call_async(url, model, [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ], headers=headers, temperature=0.5, max_tokens=2000)
+        except Exception as e:
+            return {"error": f"AI call failed: {e}", "suggestions": []}
+
+        if not reply:
+            return {"error": "AI returned empty response", "suggestions": []}
+
+        validated = _parse_json_suggestions(reply, max_items=10)
+        if not validated:
+            return {"error": "Could not parse AI response", "suggestions": []}
+        return {"suggestions": validated}
+
     # ─── Manual Research Run ───────────────────────────────────────────
 
     @router.post("/goals/{goal_id}/research/run-now")
@@ -897,6 +1000,320 @@ def setup_goals_routes() -> APIRouter:
             _log.exception("Research run failed")
             raise HTTPException(500, f"Research failed: {e}")
         return result
+
+    # ─── Chat-about endpoints (prime a new chat session with goal/milestone context) ──
+
+    def _milestone_snapshot(goal_id: str, focus_ms_id: str = None) -> str:
+        """Build a milestone progress snapshot string.
+
+        Queries all milestones for the goal and formats them with status
+        icons and completion timestamps.  If *focus_ms_id* is given, that
+        milestone is marked ``← current focus`` and an extra note is
+        appended.
+        """
+        from core.database import Milestone
+        _s_db = SessionLocal()
+        try:
+            rows = (
+                _s_db.query(Milestone)
+                .filter(Milestone.goal_id == goal_id)
+                .order_by(Milestone.sort_order)
+                .all()
+            )
+        finally:
+            _s_db.close()
+
+        def _fmt(m):
+            st = "✓ Done" if m.status == "completed" else (
+                "▶ In progress" if m.status == "in_progress" else "○ Pending"
+            )
+            done_ts = ""
+            if m.status == "completed" and getattr(m, "completed_at", None):
+                done_ts = f" (completed {m.completed_at.strftime('%Y-%m-%d %H:%M')})"
+            focus = " ← current focus" if m.id == focus_ms_id else ""
+            return f"  {st}{done_ts} — {m.title}{focus}"
+
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        snapshot = (
+            f"[Milestone progress — {now_str} UTC]\n"
+            + "\n".join(_fmt(m) for m in rows)
+        )
+        if focus_ms_id:
+            snapshot += "\n\nThe user is currently focused on the milestone marked '← current focus'."
+
+        # Append accepted research findings (max 3 most recent)
+        from core.database import GoalResearchResult
+        try:
+            research = (
+                _s_db.query(GoalResearchResult)
+                .filter(
+                    GoalResearchResult.goal_id == goal_id,
+                    GoalResearchResult.status == "accepted",
+                )
+                .order_by(GoalResearchResult.created_at.desc())
+                .limit(3)
+                .all()
+            )
+            if research:
+                snapshot += "\n\n[Accepted research findings]\n"
+                for r in research:
+                    truncated = r.summary[:300]
+                    ellipsis = "..." if len(r.summary) > 300 else ""
+                    snapshot += f"— {truncated}{ellipsis}\n"
+        except Exception:
+            pass  # non-critical — don't break the snapshot over research
+
+        return snapshot
+
+    def _resolve_chat_endpoint(owner: str):
+        """Resolve a chat endpoint (url, model, headers) for a new session.
+
+        Logic:
+          1. Look up the user's configured default endpoint (same as session creation).
+          2. If the default's model is not an embedding model, use it.
+          3. Otherwise, scan all enabled endpoints for the first non-embedding model.
+          4. If nothing qualifies, raise 400.
+        """
+        from src.endpoint_resolver import resolve_endpoint
+        # 1. Try the default endpoint (same lookup as session creation)
+        url, model, headers = resolve_endpoint("default", owner=owner)
+        if url and model and "embed" not in model.lower():
+            return url, model, headers or {}
+
+        # 2. Fall back: scan all enabled endpoints for a non-embedding model
+        from core.database import SessionLocal, ModelEndpoint
+        from src.endpoint_resolver import (
+            resolve_endpoint_runtime, build_chat_url, build_headers,
+        )
+        from src.auth_helpers import owner_filter
+        import json as _json
+
+        db = SessionLocal()
+        try:
+            q = db.query(ModelEndpoint).filter(ModelEndpoint.is_enabled == True)
+            if owner:
+                q = owner_filter(q, ModelEndpoint, owner)
+            for ep in q.all():
+                try:
+                    base, api_key = resolve_endpoint_runtime(ep, owner=owner)
+                    ep_url = build_chat_url(base)
+                    ep_headers = build_headers(api_key, base) or {}
+                    cached = _json.loads(ep.cached_models) if ep.cached_models else []
+                    for m in cached:
+                        if "embed" not in str(m).lower():
+                            return ep_url, m, ep_headers
+                except Exception:
+                    continue
+        finally:
+            db.close()
+
+        # 3. Nothing qualified
+        raise HTTPException(400, "No chat endpoint configured — add one in Settings first")
+
+    @router.post("/goals/{goal_id}/chat")
+    async def chat_about_goal(goal_id: str, request: Request):
+        """Get or create a chat session primed with this goal's context.
+
+        One chat per goal: reuses existing linked session if available,
+        otherwise creates a new one and stores the link on the Goal row.
+        """
+        owner = token_owner(request)
+        if owner is None:
+            raise HTTPException(401, "Not authenticated")
+        if session_manager is None:
+            raise HTTPException(500, "session_manager not configured")
+        db = SessionLocal()
+        try:
+            g = db.query(Goal).filter(Goal.id == goal_id, Goal.owner == owner).first()
+            if not g:
+                raise HTTPException(404, "Goal not found")
+            goal_title = g.title or ""
+            goal_desc = g.description or ""
+
+            # Reuse existing linked session if it still exists
+            if g.chat_session_id:
+                try:
+                    session_manager.get_session(g.chat_session_id)
+                    # Inject milestone progress snapshot on every "Ask" click
+                    snapshot = _milestone_snapshot(goal_id)
+                    session_manager.add_message(g.chat_session_id, ChatMessage(
+                        role="system", content=snapshot,
+                        metadata={"goal_context": goal_id},
+                    ))
+                    return {"session_id": g.chat_session_id, "name": f"Goal: {goal_title[:50]}"}
+                except (KeyError, Exception):
+                    pass  # Session was deleted — create a fresh one
+
+            ep_url, ep_model, ep_headers = _resolve_chat_endpoint(owner)
+            if not ep_url or not ep_model:
+                raise HTTPException(400, "No chat endpoint configured — add one in Settings first")
+
+            new_sid = str(uuid.uuid4())
+            new_name = f"Goal: {goal_title[:50]}"
+            new_sess = session_manager.create_session(
+                session_id=new_sid,
+                name=new_name,
+                endpoint_url=ep_url,
+                model=ep_model,
+                rag=False,
+                owner=owner,
+            )
+            if ep_headers:
+                new_sess.headers = ep_headers
+                session_manager.save_sessions()
+
+            try:
+                from src.event_bus import fire_event
+                fire_event("session_created", owner)
+            except Exception:
+                pass
+
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            primer = (
+                f"[Goal context — {date_str}]\n\n"
+                f"The user is working on this goal:\n"
+                f"Title: {goal_title}\n"
+                f"Description: {goal_desc or '(no description)'}\n\n"
+                f"Answer their questions with this context in mind, but otherwise "
+                f"behave as a normal helpful assistant. This is not a constrained "
+                f"or goal-only conversation — the user may drift off-topic freely. "
+                f"Respond conversationally and briefly — no bullet lists, no headers, "
+                f"no unsolicited plans. Match the user's energy. If they say hi, say hi "
+                f"back in one or two sentences."
+            )
+            session_manager.add_message(new_sid, ChatMessage(
+                role="system",
+                content=primer,
+                metadata={"goal_context": goal_id},
+            ))
+
+            # Inject milestone progress snapshot (no focus marker for goal-level chat)
+            snapshot = _milestone_snapshot(goal_id)
+            session_manager.add_message(new_sid, ChatMessage(
+                role="system", content=snapshot,
+                metadata={"goal_context": goal_id},
+            ))
+
+            # Persist the link on the Goal row
+            g.chat_session_id = new_sid
+            db.commit()
+
+            return {"session_id": new_sid, "name": new_name}
+        finally:
+            db.close()
+
+    @router.post("/goals/{goal_id}/milestones/{milestone_id}/chat")
+    async def chat_about_milestone(goal_id: str, milestone_id: str, request: Request):
+        """Navigate to the parent goal's linked chat, with milestone context.
+
+        Milestones share the parent goal's single chat session (Bug #2).
+        If the goal doesn't have a linked session yet, creates one (same as
+        POST /goals/{goal_id}/chat) and returns its session_id.
+        """
+        owner = token_owner(request)
+        if owner is None:
+            raise HTTPException(401, "Not authenticated")
+        if session_manager is None:
+            raise HTTPException(500, "session_manager not configured")
+        db = SessionLocal()
+        try:
+            g = db.query(Goal).filter(Goal.id == goal_id, Goal.owner == owner).first()
+            if not g:
+                raise HTTPException(404, "Goal not found")
+            ms = db.query(Milestone).filter(
+                Milestone.id == milestone_id, Milestone.goal_id == goal_id
+            ).first()
+            if not ms:
+                raise HTTPException(404, "Milestone not found")
+            goal_title = g.title or ""
+            goal_desc = g.description or ""
+            ms_title = ms.title or ""
+            ms_desc = ms.description or ""
+
+            # Reuse parent goal's linked session
+            if g.chat_session_id:
+                try:
+                    session_manager.get_session(g.chat_session_id)
+                    # Inject milestone progress snapshot with current-focus marker
+                    snapshot = _milestone_snapshot(goal_id, focus_ms_id=milestone_id)
+                    session_manager.add_message(g.chat_session_id, ChatMessage(
+                        role="system", content=snapshot,
+                        metadata={"goal_context": goal_id, "milestone_context": milestone_id},
+                    ))
+                    return {"session_id": g.chat_session_id, "name": f"Goal: {goal_title[:50]}"}
+                except (KeyError, Exception):
+                    pass  # Session was deleted — create a fresh one
+        finally:
+            db.close()
+
+        # No linked session yet — create a goal session with milestone context
+        ep_url, ep_model, ep_headers = _resolve_chat_endpoint(owner)
+        if not ep_url or not ep_model:
+            raise HTTPException(400, "No chat endpoint configured — add one in Settings first")
+
+        db2 = SessionLocal()
+        try:
+            g2 = db2.query(Goal).filter(Goal.id == goal_id, Goal.owner == owner).first()
+            if not g2:
+                raise HTTPException(404, "Goal not found")
+
+            new_sid = str(uuid.uuid4())
+            new_name = f"Goal: {goal_title[:50]}"
+            new_sess = session_manager.create_session(
+                session_id=new_sid,
+                name=new_name,
+                endpoint_url=ep_url,
+                model=ep_model,
+                rag=False,
+                owner=owner,
+            )
+            if ep_headers:
+                new_sess.headers = ep_headers
+                session_manager.save_sessions()
+
+            try:
+                from src.event_bus import fire_event
+                fire_event("session_created", owner)
+            except Exception:
+                pass
+
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            # Include both goal and milestone context in the primer
+            primer = (
+                f"[Goal & Milestone context — {date_str}]\n\n"
+                f"The user is working on this goal:\n"
+                f"Title: {goal_title}\n"
+                f"Description: {goal_desc or '(no description)'}\n\n"
+                f"This milestone:\n"
+                f"Title: {ms_title}\n"
+                f"Description: {ms_desc or '(no description)'}\n\n"
+                f"Answer their questions with this context in mind, but otherwise "
+                f"behave as a normal helpful assistant. This is not a constrained "
+                f"or goal-only conversation — the user may drift off-topic freely. "
+                f"Respond conversationally and briefly — no bullet lists, no headers, "
+                f"no unsolicited plans. Match the user's energy. If they say hi, say hi "
+                f"back in one or two sentences."
+            )
+            session_manager.add_message(new_sid, ChatMessage(
+                role="system",
+                content=primer,
+                metadata={"goal_context": goal_id, "milestone_context": milestone_id},
+            ))
+
+            # Inject milestone progress snapshot with current-focus marker
+            snapshot = _milestone_snapshot(goal_id, focus_ms_id=milestone_id)
+            session_manager.add_message(new_sid, ChatMessage(
+                role="system", content=snapshot,
+                metadata={"goal_context": goal_id, "milestone_context": milestone_id},
+            ))
+
+            # Link to goal
+            g2.chat_session_id = new_sid
+            db2.commit()
+
+            return {"session_id": new_sid, "name": new_name}
+        finally:
+            db2.close()
 
     return router
 

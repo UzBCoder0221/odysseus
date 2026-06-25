@@ -558,6 +558,14 @@ async def build_chat_context(
     if not allow_tool_preprocessing:
         mem_enabled = False
         skills_enabled = False
+    # Goal-linked sessions suppress memory injection — the goal primer
+    # is the only context they should have, no pinned/retrieved memories.
+    if mem_enabled and any(
+        getattr(msg, 'metadata', None) and msg.metadata.get('goal_context')
+        for msg in getattr(sess, 'history', [])
+    ):
+        mem_enabled = False
+        logger.debug("Goal-linked session detected — suppressing memory injection")
     logger.debug(
         "Memory enabled=%s for user=%s (incognito=%s, no_memory=%s, pref=%s)",
         mem_enabled, user, incognito, no_memory, uprefs.get("memory_enabled", "NOT_SET"),

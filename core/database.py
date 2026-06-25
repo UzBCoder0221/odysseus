@@ -765,14 +765,15 @@ class Goal(TimestampMixin, Base):
     """A user goal — top-level container for milestones."""
     __tablename__ = "goals"
 
-    id          = Column(String, primary_key=True, index=True)
-    owner       = Column(String, nullable=True, index=True)
-    title       = Column(String(200), nullable=False)
-    description = Column(Text, nullable=True)
-    target_date = Column(String, nullable=True)  # YYYY-MM-DD
-    status      = Column(String, default="active")  # active / paused / completed / abandoned
-    updated_at  = Column(DateTime, nullable=True)
-    sort_order  = Column(Integer, default=0)
+    id              = Column(String, primary_key=True, index=True)
+    owner           = Column(String, nullable=True, index=True)
+    title           = Column(String(200), nullable=False)
+    description     = Column(Text, nullable=True)
+    target_date     = Column(String, nullable=True)  # YYYY-MM-DD
+    status          = Column(String, default="active")  # active / paused / completed / abandoned
+    updated_at      = Column(DateTime, nullable=True)
+    sort_order      = Column(Integer, default=0)
+    chat_session_id = Column(String, nullable=True)  # linked chat session for "Ask about this"
 
 
 class Milestone(TimestampMixin, Base):
@@ -786,6 +787,7 @@ class Milestone(TimestampMixin, Base):
     target_date = Column(String, nullable=True)  # YYYY-MM-DD
     status      = Column(String, default="pending")  # pending / in_progress / completed
     sort_order  = Column(Integer, default=0)
+    completed_at = Column(DateTime, nullable=True)
 
 
 class GoalResearchConfig(TimestampMixin, Base):
@@ -2013,6 +2015,8 @@ def init_db():
     _migrate_add_companion_stage_sysinfo()
     _migrate_stage8_goals()
     _migrate_stage8c_research()
+    _migrate_add_milestone_completed_at()
+    _backfill_milestone_completed_at()
 
 
 def _migrate_stage8_goals():
@@ -2147,6 +2151,73 @@ def _migrate_stage8c_research():
         conn.commit()
     except Exception as e:
         logging.getLogger(__name__).warning(f"stage 8c research migration failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def _migrate_add_milestone_completed_at():
+    """Add completed_at column to milestones table. Idempotent."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(milestones)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "completed_at" not in columns:
+            conn.execute("ALTER TABLE milestones ADD COLUMN completed_at DATETIME")
+            logging.getLogger(__name__).info("Migrated: added completed_at to milestones")
+        else:
+            logging.getLogger(__name__).info("completed_at already exists on milestones, skipping")
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"milestone completed_at migration failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def _backfill_milestone_completed_at():
+    """Backfill completed_at for milestones completed before the migration.
+
+    Uses updated_at as a best-effort approximation; falls back to
+    created_at if updated_at does not exist. If neither exists, leaves
+    null rather than inventing a timestamp.
+    """
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(milestones)")
+        cols = [row[1] for row in cursor.fetchall()]
+        if "completed_at" not in cols:
+            return  # column doesn't exist yet — nothing to backfill
+        if "updated_at" in cols:
+            conn.execute(
+                "UPDATE milestones SET completed_at = updated_at "
+                "WHERE status = 'completed' AND completed_at IS NULL"
+            )
+        elif "created_at" in cols:
+            conn.execute(
+                "UPDATE milestones SET completed_at = created_at "
+                "WHERE status = 'completed' AND completed_at IS NULL"
+            )
+        conn.commit()
+        logging.getLogger(__name__).info("Backfilled completed_at for pre-migration completed milestones")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"milestone completed_at backfill failed: {e}")
     finally:
         try:
             if conn:

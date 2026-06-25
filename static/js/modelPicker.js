@@ -87,7 +87,13 @@ function _modelExists(modelId, url) {
     if (item.offline) return false;
     const itemUrl = (item.url || '').replace(/\/+$/, '');
     const models = (item.models || []).concat(item.models_extra || []);
-    return models.includes(modelId) && (!targetUrl || itemUrl === targetUrl);
+    // Match session endpoint_url against cached endpoint base_url, supporting
+    // both raw base URLs and full chat URLs (/chat/completions suffix).
+    // Mirrors the backend _session_url_matches_endpoint() logic.
+    const urlMatch = !targetUrl ||
+      itemUrl === targetUrl ||
+      targetUrl === itemUrl + '/chat/completions';
+    return models.includes(modelId) && urlMatch;
   });
 }
 

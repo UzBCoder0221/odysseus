@@ -768,7 +768,7 @@ from companion import setup_companion_routes
 app.include_router(setup_companion_routes())
 
 from goals import setup_goals_routes
-app.include_router(setup_goals_routes())
+app.include_router(setup_goals_routes(session_manager=session_manager))
 
 # ========= ROUTES (kept in app.py) =========
 
