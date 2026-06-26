@@ -441,7 +441,7 @@ def setup_chat_routes(
             sess, session_manager, session, message, reply, None,
             ctx.uprefs, memory_manager, memory_vector, webhook_manager,
             character_name=ctx.preset.character_name,
-            owner=ctx.user,
+            owner=getattr(request.state, 'api_token_owner', None) or ctx.user,
             allow_background_extraction=not tool_policy.block_all_tool_calls,
         )
 
@@ -589,6 +589,7 @@ def setup_chat_routes(
             except Exception:
                 pass
 
+        input_source = str(form_data.get("input_source", "")).strip().lower()
         no_memory = str(form_data.get("no_memory", "")).lower() == "true"
         pre_context_tool_policy = build_effective_tool_policy(
             last_user_message=message,
@@ -616,6 +617,7 @@ def setup_chat_routes(
             # index would be useless / unwanted noise.
             agent_mode=(chat_mode == "agent"),
             allow_tool_preprocessing=allow_tool_preprocessing,
+            input_source=input_source,
         )
 
         _research_flags = {"do": do_research}  # Mutable container for generator scope
@@ -1123,7 +1125,7 @@ def setup_chat_routes(
                                     last_metrics, ctx.uprefs, memory_manager, memory_vector, webhook_manager,
                                     incognito=incognito, compare_mode=compare_mode,
                                     character_name=ctx.preset.character_name,
-                                    owner=_user,
+                                    owner=getattr(request.state, 'api_token_owner', None) or _user,
                                     allow_background_extraction=not tool_policy.block_all_tool_calls,
                                 )
                             _stream_set(session, status="done")
@@ -1255,7 +1257,7 @@ def setup_chat_routes(
                                                             agent_rounds=_agent_rounds,
                                     agent_tool_calls=_agent_tool_calls,
                                     skills_manager=skills_manager,
-                                    owner=_user,
+                                    owner=getattr(request.state, 'api_token_owner', None) or _user,
                                     extract_skills=user_requested_agent,
                                     allow_background_extraction=not tool_policy.block_all_tool_calls,
                                 )

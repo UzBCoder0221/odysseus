@@ -1,0 +1,64 @@
+═══ Odysseus System Info Collector — Build Instructions ═══
+
+DEPENDENCIES (required for running AND building):
+
+    pip install pyinstaller psutil py-cpuinfo gputil screeninfo requests
+
+The shared module (sysinfo_helpers.py) uses psutil for RAM, disk, battery,
+and network data; py-cpuinfo for detailed CPU info; GPUtil for GPU info;
+screeninfo for display info; and requests for HTTP calls.
+
+Architecture:
+
+    tools/sysinfo_helpers.py          ← shared logic (both versions import this)
+    tools/sysinfo_collector.py        ← interactive version
+    tools/sysinfo_collector_silent.py ← silent / run-and-forget version
+
+PyInstaller bundles the imported module automatically — just point it at
+the entry-point script.
+
+────────────────────────────────────────────────────────────────
+  NORMAL VERSION (console window visible — recommended)
+────────────────────────────────────────────────────────────────
+
+    pyinstaller --onefile --name "OdysseusSysInfo" tools/sysinfo_collector.py
+
+  Output: dist/OdysseusSysInfo.exe
+
+────────────────────────────────────────────────────────────────
+  NORMAL VERSION (no console window)
+────────────────────────────────────────────────────────────────
+
+  NOT RECOMMENDED — the user needs to see the data summary, consent
+  prompt, and error messages.  If you really want it:
+
+    pyinstaller --onefile --noconsole --name "OdysseusSysInfo" ^
+      tools/sysinfo_collector.py
+
+────────────────────────────────────────────────────────────────
+  SILENT VERSION (starts minimized, then restores on error/success)
+────────────────────────────────────────────────────────────────
+
+  Always build WITH console — the script minimizes itself on launch
+  and restores when done.  Without a console it can't show fallback
+  messages.
+
+    pyinstaller --onefile --name "OdysseusSysInfo_Silent" ^
+      tools/sysinfo_collector_silent.py
+
+  Output: dist/OdysseusSysInfo_Silent.exe
+
+────────────────────────────────────────────────────────────────
+  NOTES
+────────────────────────────────────────────────────────────────
+
+  • Run from the project root (where tools/ lives) so PyInstaller can
+    resolve the sysinfo_helpers import.
+
+  • Windows Defender / SmartScreen will warn on first run.
+    Click "More info" → "Run anyway".  This is normal for PyInstaller
+    EXEs that aren't code-signed.
+
+  • The silent version uses ctypes to minimize/restore the console
+    window (Windows only).  On Linux/macOS it runs identically to the
+    interactive version since window management is not available.

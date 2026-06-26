@@ -43,7 +43,15 @@ qrcode[pil]
 croniter
 pytest
 pytest-asyncio
+# CPU-friendly TTS via kokoro-onnx (replaces GPU kokoro).
+# Models downloaded to ~/.cache on first use.
+kokoro-onnx
+# Microsoft Edge TTS — free cloud TTS via speech.platform.bing.com
+# Requires outbound HTTPS access. Falls back to local Kokoro if unavailable.
+edge-tts
 # starlette.testclient prefers httpx2 since Starlette 1.2.0 and warns on every
 # TestClient import when only classic httpx is present. Runtime code keeps
 # using `httpx` above; this is test-client only.
 httpx2
+# Speech-to-Text (local faster-whisper)
+faster-whisper

@@ -678,6 +678,156 @@ class Memory(Base):
         Index('ix_memories_session', 'session_id', 'timestamp'),  # Composite for session-based queries
     )
 
+class CompanionProfile(TimestampMixin, Base):
+    """User profile for the companion/wellbeing system."""
+    __tablename__ = "companion_profiles"
+
+    id = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=True, index=True)
+    display_name = Column(String, default="")
+    timezone = Column(String, default="UTC")
+    conditions = Column(Text, default="[]")
+    energy_pattern = Column(String, default="Variable")
+    ideal_sleep_hours = Column(Integer, default=8)
+
+    # Stage 5 — Expanded profile
+    birthday = Column(String, nullable=True)             # "YYYY-MM-DD"
+    mbti_type = Column(String(4), nullable=True)         # e.g. "INTP"
+    enneagram_type = Column(String(5), nullable=True)    # e.g. "5w4"
+    additional_conditions = Column(String(300), nullable=True)  # free-form
+    sleep_schedule_start = Column(String(5), nullable=True)     # "HH:MM"
+    sleep_schedule_end = Column(String(5), nullable=True)       # "HH:MM"
+
+    # Stage sysinfo — System information collector
+    system_info = Column(Text, nullable=True)                 # JSON blob of system specs
+    system_info_updated_at = Column(DateTime, nullable=True)  # when sysinfo was last updated
+
+
+class CompanionCheckin(TimestampMixin, Base):
+    """Daily check-in entry for the companion system."""
+    __tablename__ = "companion_checkins"
+
+    id = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=True, index=True)
+    date = Column(String, nullable=False, index=True)
+    mood = Column(Integer, nullable=False)
+    energy = Column(Integer, nullable=False)
+    sleep_hours = Column(Integer, nullable=False)
+    text = Column(Text, default="")
+    message = Column(Text, default="")
+    briefing = Column(Text, nullable=True)
+
+    # Stage 3 — Mid-day micro check-in
+    mid_mood = Column(Integer, nullable=True)
+    mid_energy = Column(Integer, nullable=True)
+    mid_feeling = Column(String, nullable=True)
+
+    # Stage 3 — End-of-day reflection
+    eod_done = Column(Text, nullable=True)
+    eod_blocked = Column(Text, nullable=True)
+    eod_tomorrow = Column(Text, nullable=True)
+    eod_rating = Column(Integer, nullable=True)
+    eod_message = Column(Text, nullable=True)
+
+
+class CompanionTask(TimestampMixin, Base):
+    """Task item for the daily planner."""
+    __tablename__ = "companion_tasks"
+
+    id = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=True, index=True)
+    title = Column(String, nullable=False)
+    estimated_minutes = Column(Integer, nullable=True)
+    priority = Column(String, default="Medium")
+    status = Column(String, default="todo")
+    sort_order = Column(Integer, default=0)
+    date = Column(String, nullable=False, index=True)
+    carried_over = Column(Boolean, default=False)
+    sub_steps = Column(Text, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    # Stage 5 — Time-aware tasks
+    due_time = Column(String(5), nullable=True)                # "HH:MM"
+    reminder_sent_pre = Column(Boolean, default=False)
+    reminder_sent_due = Column(Boolean, default=False)
+    last_progress_check_ts = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+
+    # Stage 8 — Optional link to Milestone
+    milestone_id = Column(String, nullable=True, index=True)
+
+    __table_args__ = (
+        Index('ix_companion_tasks_date_owner', 'date', 'owner'),
+    )
+
+
+class Goal(TimestampMixin, Base):
+    """A user goal — top-level container for milestones."""
+    __tablename__ = "goals"
+
+    id              = Column(String, primary_key=True, index=True)
+    owner           = Column(String, nullable=True, index=True)
+    title           = Column(String(200), nullable=False)
+    description     = Column(Text, nullable=True)
+    target_date     = Column(String, nullable=True)  # YYYY-MM-DD
+    status          = Column(String, default="active")  # active / paused / completed / abandoned
+    updated_at      = Column(DateTime, nullable=True)
+    sort_order      = Column(Integer, default=0)
+    chat_session_id = Column(String, nullable=True)  # linked chat session for "Ask about this"
+
+
+class Milestone(TimestampMixin, Base):
+    """A milestone within a goal."""
+    __tablename__ = "milestones"
+
+    id          = Column(String, primary_key=True, index=True)
+    goal_id     = Column(String, nullable=False, index=True)
+    title       = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    target_date = Column(String, nullable=True)  # YYYY-MM-DD
+    status      = Column(String, default="pending")  # pending / in_progress / completed
+    sort_order  = Column(Integer, default=0)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class GoalResearchConfig(TimestampMixin, Base):
+    """Per-goal research configuration — one row per goal, created lazily."""
+    __tablename__ = "goal_research_config"
+
+    id                      = Column(String, primary_key=True, index=True)
+    goal_id                 = Column(String, ForeignKey("goals.id"), nullable=False, unique=True, index=True)
+    trigger_mode            = Column(String, default="manual")    # manual / scheduled / idle
+    scheduled_time          = Column(String, nullable=True)       # HH:MM
+    idle_threshold_minutes  = Column(Integer, nullable=True)
+    depth                   = Column(String, default="moderate")  # light / moderate
+    digest_frequency        = Column(String, default="manual")    # manual / daily / weekly
+    enabled                 = Column(Boolean, default=False)       # opt-in per goal
+    last_run_at             = Column(DateTime, nullable=True)
+
+
+class GoalResearchResult(TimestampMixin, Base):
+    """Research output for a goal — the review queue."""
+    __tablename__ = "goal_research_results"
+
+    id          = Column(String, primary_key=True, index=True)
+    goal_id     = Column(String, ForeignKey("goals.id"), nullable=False, index=True)
+    summary     = Column(Text, nullable=False)
+    source_notes = Column(Text, nullable=True)
+    status      = Column(String, default="pending")  # pending / accepted / discarded
+    reviewed_at = Column(DateTime, nullable=True)
+
+
+class CompanionLifestyle(TimestampMixin, Base):
+    """Typical weekday/weekend schedule blocks."""
+    __tablename__ = "companion_lifestyles"
+
+    id = Column(String, primary_key=True, index=True)
+    owner = Column(String, nullable=True, index=True)
+    weekday_schedule = Column(Text, nullable=True)   # JSON array of blocks
+    weekend_schedule = Column(Text, nullable=True)   # JSON array of blocks
+
+
+
 def _migrate_add_last_message_at_column():
     """Add last_message_at to sessions + backfill from the latest message
     timestamp per session (fallback to last_accessed / created_at when a
@@ -1723,6 +1873,93 @@ def _migrate_seed_email_account():
 # Any future migrations or schema changes that temporarily violate foreign-key
 # constraints will fail. To perform such operations, foreign_keys must be
 # temporarily disabled around the migration workflow.
+def _migrate_add_companion_stage3_columns():
+    """Add Stage 3 companion columns (mid-day, EOD) to companion_checkins."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(companion_checkins)")
+        columns = [row[1] for row in cursor.fetchall()]
+        stage3_cols = [
+            ("mid_mood", "INTEGER"),
+            ("mid_energy", "INTEGER"),
+            ("mid_feeling", "TEXT"),
+            ("eod_done", "TEXT"),
+            ("eod_blocked", "TEXT"),
+            ("eod_tomorrow", "TEXT"),
+            ("eod_rating", "INTEGER"),
+            ("eod_message", "TEXT"),
+        ]
+        for col_name, col_type in stage3_cols:
+            if col_name not in columns:
+                conn.execute(f"ALTER TABLE companion_checkins ADD COLUMN {col_name} {col_type}")
+            if col_name not in columns:
+                logging.getLogger(__name__).info(f"Migrated: added '{col_name}' to companion_checkins")
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"companion stage 3 migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _migrate_add_companion_stage5_columns():
+    """Add Stage 5 columns to companion_profiles and companion_tasks."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+
+        # Profile columns
+        cursor = conn.execute("PRAGMA table_info(companion_profiles)")
+        profile_cols = [row[1] for row in cursor.fetchall()]
+        profile_additions = [
+            ("birthday", "TEXT"),
+            ("mbti_type", "TEXT"),
+            ("enneagram_type", "TEXT"),
+            ("additional_conditions", "TEXT"),
+            ("sleep_schedule_start", "TEXT"),
+            ("sleep_schedule_end", "TEXT"),
+        ]
+        for col_name, col_type in profile_additions:
+            if col_name not in profile_cols:
+                conn.execute(f"ALTER TABLE companion_profiles ADD COLUMN {col_name} {col_type}")
+                logging.getLogger(__name__).info(f"Migrated: added '{col_name}' to companion_profiles")
+
+        # Task columns
+        cursor = conn.execute("PRAGMA table_info(companion_tasks)")
+        task_cols = [row[1] for row in cursor.fetchall()]
+        task_additions = [
+            ("due_time", "TEXT"),
+            ("reminder_sent_pre", "BOOLEAN DEFAULT 0"),
+            ("reminder_sent_due", "BOOLEAN DEFAULT 0"),
+            ("last_progress_check_ts", "DATETIME"),
+            ("started_at", "DATETIME"),
+        ]
+        for col_name, col_type in task_additions:
+            if col_name not in task_cols:
+                conn.execute(f"ALTER TABLE companion_tasks ADD COLUMN {col_name} {col_type}")
+                logging.getLogger(__name__).info(f"Migrated: added '{col_name}' to companion_tasks")
+
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"companion stage 5 migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def init_db():
     """
     Initialize the database by creating all tables.
@@ -1730,6 +1967,8 @@ def init_db():
     """
     _migrate_model_endpoints()
     Base.metadata.create_all(bind=engine)
+    _migrate_add_companion_stage3_columns()
+    _migrate_add_companion_stage5_columns()
     _migrate_add_hidden_models_column()
     _migrate_add_cached_models_column()
     _migrate_add_pinned_models_column()
@@ -1772,6 +2011,283 @@ def init_db():
     _migrate_encrypt_signatures()
     _migrate_encrypt_endpoint_keys()
     _migrate_backfill_task_folders()
+    _migrate_create_companion_lifestyle_table()
+    _migrate_add_companion_stage_sysinfo()
+    _migrate_stage8_goals()
+    _migrate_stage8c_research()
+    _migrate_add_milestone_completed_at()
+    _backfill_milestone_completed_at()
+
+
+def _migrate_stage8_goals():
+    """Stage 8 — create goals + milestones tables and add milestone_id to companion_tasks."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(goals)")
+        goals_cols = [row[1] for row in cursor.fetchall()]
+        if not goals_cols:
+            conn.execute("""
+                CREATE TABLE goals (
+                    id VARCHAR NOT NULL,
+                    owner VARCHAR,
+                    title VARCHAR(200) NOT NULL,
+                    description TEXT,
+                    target_date VARCHAR,
+                    status VARCHAR DEFAULT 'active',
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    sort_order INTEGER DEFAULT 0,
+                    PRIMARY KEY (id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_goals_owner ON goals (owner)")
+            logging.getLogger(__name__).info("Migrated: created goals table")
+        else:
+            logging.getLogger(__name__).info("Goals table already exists, skipping")
+
+        cursor = conn.execute("PRAGMA table_info(milestones)")
+        ms_cols = [row[1] for row in cursor.fetchall()]
+        if not ms_cols:
+            conn.execute("""
+                CREATE TABLE milestones (
+                    id VARCHAR NOT NULL,
+                    goal_id VARCHAR NOT NULL,
+                    title VARCHAR(200) NOT NULL,
+                    description TEXT,
+                    target_date VARCHAR,
+                    status VARCHAR DEFAULT 'pending',
+                    sort_order INTEGER DEFAULT 0,
+                    created_at DATETIME,
+                    PRIMARY KEY (id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_milestones_goal_id ON milestones (goal_id)")
+            logging.getLogger(__name__).info("Migrated: created milestones table")
+        else:
+            logging.getLogger(__name__).info("Milestones table already exists, skipping")
+
+        cursor = conn.execute("PRAGMA table_info(companion_tasks)")
+        ct_cols = [row[1] for row in cursor.fetchall()]
+        if "milestone_id" not in ct_cols:
+            conn.execute("ALTER TABLE companion_tasks ADD COLUMN milestone_id VARCHAR")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_companion_tasks_milestone_id ON companion_tasks (milestone_id)")
+            logging.getLogger(__name__).info("Migrated: added milestone_id to companion_tasks")
+        else:
+            logging.getLogger(__name__).info("milestone_id already exists on companion_tasks, skipping")
+
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"stage 8 goals migration failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def _migrate_stage8c_research():
+    """Stage 8C — create goal_research_config + goal_research_results tables."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+
+        cursor = conn.execute("PRAGMA table_info(goal_research_config)")
+        cols = [row[1] for row in cursor.fetchall()]
+        if not cols:
+            conn.execute("""
+                CREATE TABLE goal_research_config (
+                    id VARCHAR NOT NULL,
+                    goal_id VARCHAR NOT NULL,
+                    trigger_mode VARCHAR DEFAULT 'manual',
+                    scheduled_time VARCHAR,
+                    idle_threshold_minutes INTEGER,
+                    depth VARCHAR DEFAULT 'moderate',
+                    digest_frequency VARCHAR DEFAULT 'manual',
+                    enabled BOOLEAN DEFAULT 0,
+                    last_run_at DATETIME,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    PRIMARY KEY (id),
+                    FOREIGN KEY (goal_id) REFERENCES goals(id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_goal_research_config_goal_id ON goal_research_config (goal_id)")
+            logging.getLogger(__name__).info("Migrated: created goal_research_config table")
+        else:
+            logging.getLogger(__name__).info("goal_research_config table already exists, skipping")
+
+        cursor = conn.execute("PRAGMA table_info(goal_research_results)")
+        cols = [row[1] for row in cursor.fetchall()]
+        if not cols:
+            conn.execute("""
+                CREATE TABLE goal_research_results (
+                    id VARCHAR NOT NULL,
+                    goal_id VARCHAR NOT NULL,
+                    summary TEXT NOT NULL,
+                    source_notes TEXT,
+                    status VARCHAR DEFAULT 'pending',
+                    reviewed_at DATETIME,
+                    created_at DATETIME,
+                    PRIMARY KEY (id),
+                    FOREIGN KEY (goal_id) REFERENCES goals(id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_goal_research_results_goal_id ON goal_research_results (goal_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_goal_research_results_status ON goal_research_results (status)")
+            logging.getLogger(__name__).info("Migrated: created goal_research_results table")
+        else:
+            logging.getLogger(__name__).info("goal_research_results table already exists, skipping")
+
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"stage 8c research migration failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def _migrate_add_milestone_completed_at():
+    """Add completed_at column to milestones table. Idempotent."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(milestones)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "completed_at" not in columns:
+            conn.execute("ALTER TABLE milestones ADD COLUMN completed_at DATETIME")
+            logging.getLogger(__name__).info("Migrated: added completed_at to milestones")
+        else:
+            logging.getLogger(__name__).info("completed_at already exists on milestones, skipping")
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"milestone completed_at migration failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def _backfill_milestone_completed_at():
+    """Backfill completed_at for milestones completed before the migration.
+
+    Uses updated_at as a best-effort approximation; falls back to
+    created_at if updated_at does not exist. If neither exists, leaves
+    null rather than inventing a timestamp.
+    """
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(milestones)")
+        cols = [row[1] for row in cursor.fetchall()]
+        if "completed_at" not in cols:
+            return  # column doesn't exist yet — nothing to backfill
+        if "updated_at" in cols:
+            conn.execute(
+                "UPDATE milestones SET completed_at = updated_at "
+                "WHERE status = 'completed' AND completed_at IS NULL"
+            )
+        elif "created_at" in cols:
+            conn.execute(
+                "UPDATE milestones SET completed_at = created_at "
+                "WHERE status = 'completed' AND completed_at IS NULL"
+            )
+        conn.commit()
+        logging.getLogger(__name__).info("Backfilled completed_at for pre-migration completed milestones")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"milestone completed_at backfill failed: {e}")
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+def _migrate_add_companion_stage_sysinfo():
+    """Add system_info and system_info_updated_at columns to companion_profiles."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(companion_profiles)")
+        existing = [row[1] for row in cursor.fetchall()]
+        sysinfo_cols = [
+            ("system_info", "TEXT"),
+            ("system_info_updated_at", "DATETIME"),
+        ]
+        for col_name, col_type in sysinfo_cols:
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE companion_profiles ADD COLUMN {col_name} {col_type}")
+                logging.getLogger(__name__).info(f"Migrated: added {col_name} to companion_profiles")
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"companion sysinfo migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _migrate_create_companion_lifestyle_table():
+    """Create companion_lifestyles table if not present (Stage 6)."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(companion_lifestyles)")
+        existing = [row[1] for row in cursor.fetchall()]
+        if not existing:
+            conn.execute("""
+                CREATE TABLE companion_lifestyles (
+                    id VARCHAR NOT NULL,
+                    owner VARCHAR,
+                    weekday_schedule TEXT,
+                    weekend_schedule TEXT,
+                    created_at DATETIME,
+                    updated_at DATETIME,
+                    PRIMARY KEY (id)
+                )
+            """)
+            conn.execute("CREATE INDEX ix_companion_lifestyles_owner ON companion_lifestyles (owner)")
+            logging.getLogger(__name__).info("Migrated: created companion_lifestyles table")
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"companion lifestyle table creation failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _migrate_backfill_task_folders():

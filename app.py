@@ -140,6 +140,7 @@ _TIMEOUT_EXEMPT_PREFIXES = (
     "/api/cookbook/setup",  # remote pacman/apt installs
     "/api/upload",          # large files
     "/api/image",           # diffusion proxies (inpaint/harmonize/upscale/etc.) — own 120s httpx timeout
+    "/api/goals",           # goal decomposition calls LLM which may take 30-60s
 )
 
 
@@ -181,6 +182,9 @@ if AUTH_ENABLED:
         "/api/auth/integrations/presets",
         "/api/health",
         "/api/version",
+        "/api/companion/sysinfo",
+        "/api/companion/sysinfo/downloads/status",
+        "/api/companion/sysinfo/downloads/source",
         "/login",
     }
     AUTH_EXEMPT_PREFIXES = ["/static"]
@@ -629,11 +633,18 @@ from routes.tts_routes import setup_tts_routes
 app.include_router(setup_tts_routes(tts_service))
 
 # STT
-from services.stt import get_stt_service
+from services.stt import get_stt_service, get_model as _stt_get_model
 stt_service = get_stt_service()
 from routes.stt_routes import setup_stt_routes
 app.include_router(setup_stt_routes(stt_service))
 logger.info("STT service initialized (provider managed via settings)")
+
+# Eagerly load the STT model at startup so first transcription isn't slow.
+try:
+    _stt_get_model()
+    logger.info("STT model pre-loaded")
+except Exception as _e:
+    logger.warning("STT model pre-load skipped (will load on first request): %s", _e)
 
 # Documents (artifacts/canvas)
 from routes.document_routes import setup_document_routes
@@ -758,6 +769,9 @@ app.include_router(setup_contacts_routes())
 
 from companion import setup_companion_routes
 app.include_router(setup_companion_routes())
+
+from goals import setup_goals_routes
+app.include_router(setup_goals_routes(session_manager=session_manager))
 
 # ========= ROUTES (kept in app.py) =========
 

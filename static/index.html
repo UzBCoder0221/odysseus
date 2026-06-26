@@ -889,6 +889,15 @@
           </svg>
           <span class="grow">Notes</span>
         </div>
+        <div class="list-item" id="tool-goals-btn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            style="flex-shrink:0;opacity:0.5;">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 6v6l4 2"/>
+          </svg>
+          <span class="grow">Goals</span>
+        </div>
         <div class="list-item" id="tool-tasks-btn">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -939,7 +948,9 @@
     <div class="chat-top-bar">
       <button type="button" class="incognito-indicator" id="incognito-indicator" title="Nobody mode active — click to deactivate" style="display:none;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><line x1="8" y1="16" x2="16" y2="8"/><line x1="8" y1="8" x2="16" y2="16"/></svg></button>
       <div class="chat-meta-overlay"><span id="current-meta">Odysseus Chat</span><span id="current-meta-count" class="chat-meta-count" aria-hidden="true"></span><span id="session-cost-display" class="session-cost-display" style="display:none;"></span><span class="export-dropdown-wrap" id="export-dropdown-wrap"><button type="button" class="export-dl-btn" id="export-dl-btn" title="More"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button><div class="export-dropdown-menu" id="export-dropdown-menu"><div class="export-dropdown-item" id="export-rename-btn"><span class="dropdown-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg></span><span>Rename</span></div><div class="export-dropdown-item" id="export-copy-btn"><span class="dropdown-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span><span>Copy Chat</span></div><div class="export-dropdown-item" id="export-pdf-btn"><span class="dropdown-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9 15v-2h2a1.5 1.5 0 0 1 0 3H9z"/></svg></span><span>PDF</span></div><div class="export-dropdown-item" id="export-doc-btn"><span class="dropdown-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></span><span>Save to Documents</span></div></div></span></div>    </div>
-    <div id="welcome-screen">
+      <div id="companion-bar" class="companion-bar"></div>
+      <div id="companion-nudge" class="companion-nudge hidden"></div>
+      <div id="welcome-screen">
       <div class="welcome-name"><svg class="welcome-boat" viewBox="0 0 32 32"><path d="M16 4L16 22L6 22Z" fill="currentColor"/><path d="M16 8L16 22L24 22Z" fill="currentColor" opacity="0.6"/><path d="M4 24Q10 20 16 24Q22 28 28 24" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round"/></svg>Odysseus</div>
       <div class="welcome-sub" id="welcome-sub">Welcome, <span class="setup-trigger-link" style="color:var(--accent,var(--red));font-weight:600;cursor:pointer;text-decoration:underline;" title="Click to launch setup">type /setup</span> to get started.</div>
       <div class="welcome-tip" id="welcome-tip"></div>
@@ -1119,6 +1130,10 @@
           </button>
         </div>
         <div class="chat-input-right">
+          <span class="stt-container" style="display:none;" id="stt-container">
+            <button type="button" class="stt-btn stt-idle" id="stt-mic-btn" title="Voice input (STT)">🎤</button>
+            <button type="button" class="stt-dropdown-btn" id="stt-dd-btn" title="STT settings">▾</button>
+          </span>
           <!-- Agent / Chat mode toggle -->
           <div class="mode-toggle">
             <button type="button" class="mode-toggle-btn active" id="mode-agent-btn" aria-pressed="true">Agent</button>
@@ -1220,6 +1235,330 @@
 
 
   </main>
+
+  <!-- Companion side panel -->
+  <div id="companion-panel" class="companion-panel hidden">
+    <div class="companion-panel-header">
+      <h4 style="display:flex;align-items:center;gap:6px;margin:0;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 1 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+        Companion
+      </h4>
+      <button class="close-btn" id="companion-close" aria-label="Close companion panel">✖</button>
+    </div>
+    <div class="companion-panel-tabs">
+      <button class="companion-tab active" data-companion-tab="checkin">Check-in</button>
+      <button class="companion-tab" data-companion-tab="today">Today</button>
+      <button class="companion-tab" data-companion-tab="history">History</button>
+      <button class="companion-tab" data-companion-tab="profile">Profile</button>
+      <button class="companion-tab" data-companion-tab="lifestyle">Routine</button>
+    </div>
+    <div class="companion-panel-body">
+
+      <!-- Check-in panel -->
+      <div data-companion-panel="checkin">
+        <div id="companion-briefing-box"></div>
+        <div class="companion-field">
+          <label>Mood <span id="companion-mood-val">6</span>/10</label>
+          <input type="range" id="companion-mood" min="1" max="10" step="1" value="6" class="companion-slider">
+        </div>
+        <div class="companion-field">
+          <label>Energy <span id="companion-energy-val">5</span>/10</label>
+          <input type="range" id="companion-energy" min="1" max="10" step="1" value="5" class="companion-slider">
+        </div>
+        <div class="companion-field">
+          <label>Sleep last night (hours)</label>
+          <input type="number" id="companion-sleep" min="0" max="24" step="0.5" placeholder="e.g. 7.5" class="companion-input">
+        </div>
+        <div class="companion-field">
+          <label>Anything on your mind? <span class="companion-optional">optional</span></label>
+          <textarea id="companion-text" rows="2" maxlength="200" placeholder="..." class="companion-textarea"></textarea>
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:12px;">
+          <button type="button" class="confirm-btn confirm-btn-primary" id="companion-submit">Save</button>
+        </div>
+      </div>
+
+      <!-- Today panel (briefing + tasks + mid-day + EOD + Just talk) -->
+      <div data-companion-panel="today" class="hidden">
+        <div id="companion-briefing-today" class="companion-briefing-card"></div>
+
+        <!-- Mid-day micro check-in card -->
+        <div id="companion-midday-card" class="companion-card hidden">
+          <div class="companion-card-title">Mid-Day Check-in</div>
+          <div class="companion-field">
+            <label>Mid Mood <span id="companion-mid-mood-val">5</span>/5</label>
+            <input type="range" id="companion-mid-mood" min="1" max="5" step="1" value="5" class="companion-slider">
+          </div>
+          <div class="companion-field">
+            <label>Mid Energy <span id="companion-mid-energy-val">5</span>/5</label>
+            <input type="range" id="companion-mid-energy" min="1" max="5" step="1" value="5" class="companion-slider">
+          </div>
+          <div class="companion-field">
+            <label>How are you feeling?</label>
+            <div class="companion-feeling-grid" id="companion-feeling-grid">
+              <button class="companion-feeling-btn" data-feeling="focused">🎯 Focused</button>
+              <button class="companion-feeling-btn" data-feeling="tired">😴 Tired</button>
+              <button class="companion-feeling-btn" data-feeling="stressed">😰 Stressed</button>
+              <button class="companion-feeling-btn" data-feeling="calm">😌 Calm</button>
+              <button class="companion-feeling-btn" data-feeling="distracted">🌀 Distracted</button>
+              <button class="companion-feeling-btn" data-feeling="motivated">🚀 Motivated</button>
+            </div>
+          </div>
+          <div id="companion-mid-message" class="companion-mid-message hidden"></div>
+          <button type="button" class="confirm-btn confirm-btn-primary" id="companion-mid-submit" style="width:100%;">Reflect</button>
+        </div>
+
+        <!-- EOD reflection card -->
+        <div id="companion-eod-card" class="companion-card hidden">
+          <div class="companion-card-title">End-of-Day Reflection</div>
+          <div class="companion-field">
+            <label>What went well?</label>
+            <textarea id="companion-eod-done" rows="2" placeholder="e.g. Finished the report, had a great call..." class="companion-textarea"></textarea>
+          </div>
+          <div class="companion-field">
+            <label>What blocked you?</label>
+            <textarea id="companion-eod-blocked" rows="2" placeholder="e.g. Too many interruptions..." class="companion-textarea"></textarea>
+          </div>
+          <div class="companion-field">
+            <label>Tomorrow's focus</label>
+            <textarea id="companion-eod-tomorrow" rows="2" placeholder="e.g. Start the design doc..." class="companion-textarea"></textarea>
+          </div>
+          <div class="companion-field">
+            <label>Rate your day <span id="companion-eod-rating-val">3</span>/5</label>
+            <input type="range" id="companion-eod-rating" min="1" max="5" step="1" value="3" class="companion-slider">
+          </div>
+          <div id="companion-eod-message" class="companion-mid-message hidden"></div>
+          <button type="button" class="confirm-btn confirm-btn-primary" id="companion-eod-submit" style="width:100%;">Reflect</button>
+        </div>
+
+        <div class="companion-field">
+          <label style="font-size:13px;font-weight:600;">Tasks</label>
+        </div>
+        <div id="companion-task-list"></div>
+        <div class="companion-add-task-form">
+          <input type="text" id="companion-task-input" placeholder="Add a task..." maxlength="80" class="companion-input" style="flex:1;">
+          <input type="number" id="companion-task-time" placeholder="min" min="1" class="companion-input" style="width:50px;flex-shrink:0;">
+          <input type="time" id="companion-task-due" class="companion-input" style="width:90px;flex-shrink:0;" title="Due time (optional)">
+          <select id="companion-task-priority" class="companion-input" style="width:74px;flex-shrink:0;">
+            <option value="High">High</option>
+            <option value="Medium" selected>Medium</option>
+            <option value="Low">Low</option>
+          </select>
+          <button type="button" class="confirm-btn confirm-btn-primary" id="companion-task-add" style="flex-shrink:0;">+</button>
+        </div>
+        <button type="button" class="companion-priority-btn" id="companion-triage-btn">Help me prioritize</button>
+
+        <!-- Just talk chat -->
+        <div class="companion-card companion-chat-card" id="companion-chat-card">
+          <div class="companion-card-header" id="companion-chat-header">
+            <div class="companion-card-title">💬 Just talk</div>
+            <div class="companion-card-header-actions">
+              <button type="button" class="companion-card-collapse-btn" id="companion-chat-collapse" title="Collapse">×</button>
+              <svg class="companion-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </div>
+          <div class="companion-card-body" id="companion-chat-body">
+            <div id="companion-chat-log" class="companion-chat-log"></div>
+            <div class="companion-chat-input-row">
+              <input type="text" id="companion-chat-input" placeholder="Type anything..." class="companion-input" style="flex:1;">
+              <button type="button" class="confirm-btn confirm-btn-primary" id="companion-chat-send" style="flex-shrink:0;">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- History panel -->
+      <div data-companion-panel="history" class="hidden">
+        <div id="companion-mood-grid"></div>
+        <div id="companion-history-list" class="companion-history-list"></div>
+        <div id="companion-history-detail" class="companion-history-list" style="margin-top:8px;"></div>
+        <!-- Patterns card -->
+        <div class="companion-card companion-patterns-card" id="companion-patterns-card">
+          <div class="companion-card-header" id="companion-patterns-header">
+            <div class="companion-card-title">📊 Patterns</div>
+            <div class="companion-card-header-actions">
+              <svg class="companion-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </div>
+          <div class="companion-card-body" id="companion-patterns-body">
+            <div id="companion-patterns-content" class="companion-patterns-content"></div>
+            <div id="companion-patterns-suggestion" class="companion-patterns-suggestion hidden"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Profile panel -->
+      <div data-companion-panel="profile" class="hidden">
+        <div class="companion-field">
+          <label>Display name</label>
+          <input type="text" id="companion-profile-name" maxlength="50" placeholder="Your name" class="companion-input">
+        </div>
+        <div class="companion-field">
+          <label>Timezone</label>
+          <input type="text" id="companion-profile-tz" placeholder="Auto-detected" class="companion-input">
+        </div>
+        <div class="companion-field">
+          <label>Ideal sleep hours</label>
+          <input type="number" id="companion-profile-sleep" min="4" max="12" step="0.5" value="8" class="companion-input">
+        </div>
+        <div class="companion-field">
+          <label>Conditions <span class="companion-optional">optional</span></label>
+          <div class="companion-condition-grid">
+            <label class="companion-condition-chip"><input type="checkbox" data-companion-condition="adhd"><span>ADHD</span></label>
+            <label class="companion-condition-chip"><input type="checkbox" data-companion-condition="anxiety"><span>Anxiety</span></label>
+            <label class="companion-condition-chip"><input type="checkbox" data-companion-condition="depression"><span>Depression</span></label>
+            <label class="companion-condition-chip"><input type="checkbox" data-companion-condition="chronic_fatigue"><span>Chronic Fatigue</span></label>
+            <label class="companion-condition-chip"><input type="checkbox" data-companion-condition="sleep_disorder"><span>Sleep Disorder</span></label>
+            <label class="companion-condition-chip"><input type="checkbox" data-companion-condition="none"><span>None</span></label>
+          </div>
+        </div>
+        <div class="companion-field">
+          <label>Birthday <span class="companion-optional">optional</span></label>
+          <input type="date" id="companion-profile-birthday" class="companion-input">
+        </div>
+        <div class="companion-field">
+          <label>MBTI type <span class="companion-optional">optional</span></label>
+          <input type="text" id="companion-profile-mbti" maxlength="4" placeholder="e.g. INFJ" class="companion-input">
+        </div>
+        <div class="companion-field">
+          <label>Enneagram type <span class="companion-optional">optional</span></label>
+          <input type="text" id="companion-profile-enneagram" maxlength="4" placeholder="e.g. 4w5" class="companion-input">
+        </div>
+        <div class="companion-field">
+          <label>Additional conditions <span class="companion-optional">optional</span></label>
+          <textarea id="companion-profile-additional" maxlength="300" placeholder="e.g. autism, bipolar, OCD, PTSD, chronic pain, or anything else" class="companion-input" style="min-height:60px;resize:vertical"></textarea>
+          <div style="font-size:11px;color:#888;margin-top:2px;"><span id="companion-profile-additional-counter">0</span>/300</div>
+        </div>
+        <div class="companion-field">
+          <label>Sleep schedule <span class="companion-optional">optional</span></label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input type="time" id="companion-profile-sleep-start" class="companion-input" style="flex:1">
+            <span style="color:#888">to</span>
+            <input type="time" id="companion-profile-sleep-end" class="companion-input" style="flex:1">
+          </div>
+        </div>
+        <div class="companion-field">
+          <label>Natural energy pattern</label>
+          <div class="companion-pattern-grid">
+            <button type="button" class="companion-pattern-btn" data-companion-pattern="Morning Person">Morning Person</button>
+            <button type="button" class="companion-pattern-btn" data-companion-pattern="Night Owl">Night Owl</button>
+            <button type="button" class="companion-pattern-btn" data-companion-pattern="Variable">Variable</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:8px;">
+          <button type="button" class="confirm-btn" id="companion-sync-btn">Sync to server</button>
+        </div>
+
+        <!-- System Info collapsible card -->
+        <div class="companion-card companion-sysinfo-card" id="companion-sysinfo-card" style="margin-top:12px;">
+          <div class="companion-card-header" id="companion-sysinfo-header">
+            <div class="companion-card-title">💻 System Info</div>
+            <div class="companion-card-header-actions">
+              <svg class="companion-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </div>
+          <div class="companion-card-body">
+            <div id="companion-sysinfo-empty" style="padding:12px 8px;text-align:center;opacity:0.5;font-size:13px;">
+              Not collected yet. Get the collector tool to send your system info here.
+            </div>
+            <div id="companion-sysinfo-table" class="hidden" style="font-size:12px;line-height:1.6;"></div>
+            <div id="companion-sysinfo-updated" style="font-size:11px;color:#888;margin-top:4px;"></div>
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+              <button type="button" class="confirm-btn" id="companion-sysinfo-refresh" style="flex:1;">🔄 Refresh</button>
+              <button type="button" class="confirm-btn" id="companion-sysinfo-get-tool" style="flex:1;">📥 Get the collector tool</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lifestyle panel -->
+      <div data-companion-panel="lifestyle" class="hidden">
+        <div class="companion-card">
+          <div class="companion-card-title">🗓️ Daily Routine</div>
+          <div class="companion-card-body">
+            <!-- Weekday schedule -->
+            <div class="companion-field">
+              <label>Typical Weekday</label>
+              <div id="companion-weekday-blocks"></div>
+              <button type="button" class="confirm-btn" id="companion-weekday-add" style="width:100%;margin-top:4px;">+ Add block</button>
+            </div>
+
+            <!-- Weekend schedule -->
+            <div class="companion-field" style="margin-top:12px;">
+              <label>Typical Weekend</label>
+              <div id="companion-weekend-blocks"></div>
+              <button type="button" class="confirm-btn" id="companion-weekend-add" style="width:100%;margin-top:4px;">+ Add block</button>
+            </div>
+
+            <!-- Empty state helper text (shown when no blocks exist) -->
+            <div id="companion-lifestyle-empty" class="hidden" style="text-align:center;padding:16px 8px;opacity:0.5;font-size:12px;">
+              No routine set yet — add your typical day below
+            </div>
+
+            <!-- Save button -->
+            <div style="display:flex;gap:6px;margin-top:8px;">
+              <button type="button" class="confirm-btn confirm-btn-primary" id="companion-lifestyle-save" style="flex:1;">Save routine</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+
+
+    </div>
+  </div>
+
+  <!-- Downloads modal -->
+  <div id="companion-dl-modal" class="modal hidden">
+    <div class="modal-content" role="dialog" aria-label="Downloads" style="background:var(--bg);max-width:500px;">
+      <div class="modal-header">
+        <h4>📥 Downloads</h4>
+        <button class="close-btn" id="companion-dl-close" aria-label="Close downloads">✖</button>
+      </div>
+      <div class="modal-body" style="max-height:70vh;overflow-y:auto;">
+        <div class="companion-card" style="margin-bottom:12px;">
+          <div class="companion-card-title">Quick Setup</div>
+          <div class="companion-card-body" style="display:block;">
+            <p style="margin:0 0 10px 0;font-size:13px;opacity:0.8;">
+              Ready-to-run tools — no Python required. Pick one:
+            </p>
+            <button type="button" class="confirm-btn confirm-btn-primary" id="companion-dl-normal" style="width:100%;margin-bottom:4px;">
+              ⬇ Download Collector
+            </button>
+            <p id="companion-dl-normal-legend" style="margin:0 0 12px 0;font-size:12px;opacity:0.65;">
+              Shows you exactly what data it found and asks before sending. Use this the first time, or if you want to review each time.
+            </p>
+            <button type="button" class="confirm-btn confirm-btn-primary" id="companion-dl-silent" style="width:100%;margin-bottom:4px;">
+              ⬇ Download Silent Collector
+            </button>
+            <p id="companion-dl-silent-legend" style="margin:0 0 4px 0;font-size:12px;opacity:0.65;">
+              Runs quietly in the background and sends automatically once it finds Odysseus. Only asks for input if it can't find the server on its own. Good for routine re-syncs.
+            </p>
+          </div>
+        </div>
+        <div class="companion-card" style="margin-bottom:12px;">
+          <div class="companion-card-title">View Source / Build Your Own</div>
+          <div class="companion-card-body" style="display:block;">
+            <p style="margin:0 0 10px 0;font-size:13px;opacity:0.8;">
+              If you'd rather not run a pre-built .exe from someone else, download the exact Python source used to build it above. Read it, verify it does what it says, then build your own .exe — instructions are included.
+            </p>
+            <button type="button" class="confirm-btn" id="companion-dl-source" style="width:100%;margin-bottom:4px;">
+              ⬇ Download Source (.zip)
+            </button>
+            <p style="margin:0 0 4px 0;font-size:12px;opacity:0.65;">
+              Contains the full source code (3 files) plus step-by-step build instructions for Windows.
+            </p>
+          </div>
+        </div>
+        <p style="margin:0;font-size:11px;opacity:0.5;line-height:1.5;">
+          Either way: no passwords, IPs, MAC addresses, or personal files are ever collected — only hardware specs (CPU, RAM, GPU, disk space, etc). You'll always see exactly what's being sent before it's sent, except when using the Silent Collector after it has already found your server automatically.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div id="companion-overlay" class="companion-overlay hidden"></div>
+
   <button id="scroll-bottom-btn" class="scroll-nav-btn" title="Scroll to bottom">▼</button>
   <script nonce="{{CSP_NONCE}}">
   (function(){
@@ -1516,10 +1855,7 @@
               <div id="set-imgSettingsMsg" style="font-size:11px;color:color-mix(in srgb, var(--fg) 45%, transparent);"></div>
             </div>
           </div>
-          <!-- TTS panel hidden — user opted out of read-aloud entirely. Kept
-               in DOM so the JS that wires set-ttsProviderSelect etc. doesn't
-               throw on missing nodes; not visible to anyone. -->
-          <div class="admin-card" hidden style="display:none">
+          <div class="admin-card">
             <h2 style="display:flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px;opacity:0.6"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>Text to Speech<span style="flex:1"></span><label class="admin-switch"><input type="checkbox" id="set-ttsEnabledToggle" checked><span class="admin-slider"></span></label></h2>
             <div class="admin-toggle-sub" style="margin-bottom:8px">Configure TTS provider for assistant message read-aloud.</div>
             <div style="display:flex;flex-direction:column;gap:0.5rem;">
@@ -1528,6 +1864,7 @@
                 <select id="set-ttsProviderSelect" class="settings-select">
                   <option value="disabled">Disabled</option>
                   <option value="browser">Browser (built-in)</option>
+                  <option value="edge">Edge TTS (Free)</option>
                   <option value="local">Local (Kokoro-82M)</option>
                 </select>
               </div>
@@ -1543,17 +1880,9 @@
               <div id="set-ttsVoiceRow" style="display:flex;align-items:center;gap:0.75rem;">
                 <label class="settings-label">Voice</label>
                 <select id="set-ttsVoiceSelect" class="settings-select">
-                  <option value="alloy">Alloy</option>
-                  <option value="ash">Ash</option>
-                  <option value="coral">Coral</option>
-                  <option value="echo">Echo</option>
-                  <option value="fable">Fable</option>
-                  <option value="nova">Nova</option>
-                  <option value="onyx">Onyx</option>
-                  <option value="sage">Sage</option>
-                  <option value="shimmer">Shimmer</option>
+                  <option value="">Loading...</option>
                 </select>
-                <input id="set-ttsVoiceInput" type="text" placeholder="af_heart" style="flex:1;padding:5px;display:none;">
+                <input id="set-ttsVoiceInput" type="text" placeholder="Custom voice name" style="flex:1;padding:5px;display:none;">
               </div>
               <div id="set-ttsSpeedRow" style="display:flex;align-items:center;gap:0.75rem;">
                 <label class="settings-label">Speed</label>
@@ -1566,8 +1895,58 @@
                   <option value="2">2x</option>
                 </select>
               </div>
+              <div style="display:flex;align-items:center;gap:0.75rem;margin-top:2px;">
+                <label class="settings-label" style="margin-bottom:0;">Auto-play</label>
+                <label class="admin-switch" title="Auto-play AI responses"><input type="checkbox" id="set-ttsAutoPlayToggle"><span class="admin-slider"></span></label>
+              </div>
+              <div style="display:flex;align-items:center;gap:0.75rem;">
+                <label class="settings-label" style="margin-bottom:0;">OpenAI key</label>
+                <input id="set-ttsOpenAIKey" type="password" placeholder="sk-..." style="flex:1;padding:5px;font-size:12px;min-width:180px;">
+              </div>
               <button type="button" id="set-ttsPreviewBtn" class="admin-btn-sm" style="margin-top:4px;padding:5px 16px;font-size:12px;">Preview</button>
               <div id="set-ttsSettingsMsg" style="font-size:11px;color:color-mix(in srgb, var(--fg) 45%, transparent);"></div>
+            </div>
+          </div>
+          <div class="admin-card" id="set-sttCard">
+            <h2 style="display:flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px;opacity:0.6"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>Voice Input (STT)<span style="flex:1"></span><label class="admin-switch"><input type="checkbox" id="set-sttEnabledToggle"><span class="admin-slider"></span></label></h2>
+            <div class="admin-toggle-sub" style="margin-bottom:8px">Speech-to-text — speak instead of typing. Uses VAD (Voice Activity Detection) for hands-free use.</div>
+            <div id="set-sttConfigWrap" style="display:flex;flex-direction:column;gap:0.5rem;">
+              <div style="display:flex;align-items:center;gap:0.75rem;">
+                <label class="settings-label">Provider</label>
+                <select id="set-sttProviderSelect" class="settings-select">
+                  <option value="disabled">Disabled</option>
+                  <option value="browser">Browser (built-in)</option>
+                  <option value="local">Local (faster-whisper)</option>
+                  <option value="openai">OpenAI Whisper</option>
+                </select>
+              </div>
+              <div id="set-sttModelRow" style="display:flex;align-items:center;gap:0.75rem;">
+                <label class="settings-label">Model</label>
+                <select id="set-sttModelSelect" class="settings-select">
+                  <option value="base">base (fast)</option>
+                  <option value="small">small (balanced)</option>
+                  <option value="medium">medium (accurate)</option>
+                  <option value="large">large (most accurate)</option>
+                </select>
+                <input id="set-sttModelInput" type="text" placeholder="custom model (e.g. large-v3)" style="flex:1;padding:5px;font-size:12px;min-width:120px;">
+              </div>
+              <div id="set-sttModeRow" style="display:flex;align-items:center;gap:0.75rem;">
+                <label class="settings-label">Mode</label>
+                <select id="set-sttModeSelect" class="settings-select">
+                  <option value="fill">Fill input box (review before sending)</option>
+                  <option value="send">Send immediately (hands-free)</option>
+                </select>
+              </div>
+              <div id="set-sttSilenceRow" style="display:flex;align-items:center;gap:0.75rem;">
+                <label class="settings-label" style="margin-bottom:0;">Silence timeout</label>
+                <input id="set-sttSilenceSlider" type="range" min="800" max="2000" step="100" value="1200" style="flex:1;max-width:120px;">
+                <span id="set-sttSilenceLabel" style="font-size:11px;opacity:0.6;min-width:60px;">1200ms</span>
+              </div>
+              <div id="set-sttLangRow" style="display:flex;align-items:center;gap:0.75rem;">
+                <label class="settings-label">Language</label>
+                <input id="set-sttLangInput" type="text" placeholder="auto (blank = detect)" style="flex:1;padding:5px;font-size:12px;min-width:180px;">
+              </div>
+              <div id="set-sttSettingsMsg" style="font-size:11px;color:color-mix(in srgb, var(--fg) 45%, transparent);"></div>
             </div>
           </div>
           <div class="admin-card">
@@ -2350,6 +2729,7 @@
 <script type="module" src="/static/js/search.js"></script>
 <script type="module" src="/static/js/spinner.js"></script>
 <script type="module" src="/static/js/tts-ai.js"></script>
+<script type="module" src="/static/js/stt.js"></script>
 <script type="module" src="/static/js/document.js"></script>
 <script type="module" src="/static/js/gallery.js"></script>
 <script type="module" src="/static/js/chatRenderer.js"></script>
@@ -2359,6 +2739,7 @@
 <script type="module" src="/static/js/cookbook.js"></script>
 <script src="/static/js/cookbookSchedule.js"></script>
 <script type="module" src="/static/js/search-chat.js"></script>
+<script type="module" src="/static/js/goals.js"></script>
 <script type="module" src="/static/js/compare/index.js"></script>
 <script type="module" src="/static/js/theme.js"></script>
 <script type="module" src="/static/js/censor.js"></script>

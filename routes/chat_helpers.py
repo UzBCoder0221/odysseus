@@ -518,6 +518,7 @@ async def build_chat_context(
     use_enhanced_message: bool = False,
     agent_mode: bool = False,
     allow_tool_preprocessing: bool = True,
+    input_source: str = "",
 ) -> ChatContext:
     """Build the full context (preface + messages) for an LLM call.
 
@@ -557,6 +558,14 @@ async def build_chat_context(
     if not allow_tool_preprocessing:
         mem_enabled = False
         skills_enabled = False
+    # Goal-linked sessions suppress memory injection — the goal primer
+    # is the only context they should have, no pinned/retrieved memories.
+    if mem_enabled and any(
+        getattr(msg, 'metadata', None) and msg.metadata.get('goal_context')
+        for msg in getattr(sess, 'history', [])
+    ):
+        mem_enabled = False
+        logger.debug("Goal-linked session detected — suppressing memory injection")
     logger.debug(
         "Memory enabled=%s for user=%s (incognito=%s, no_memory=%s, pref=%s)",
         mem_enabled, user, incognito, no_memory, uprefs.get("memory_enabled", "NOT_SET"),
@@ -634,6 +643,19 @@ async def build_chat_context(
                 messages.append(_dt_msg)
         except Exception:
             logger.debug("Failed to add current date/time context", exc_info=True)
+
+    # Voice input hint — ephemeral instruction injected when the message
+    # originated from voice (STT send mode). Placed immediately before the
+    # latest user turn, never persisted to DB (same pattern as datetime).
+    if input_source == "voice":
+        voice_hint = {
+            "role": "user",
+            "content": "[Voice Input] The message was spoken via voice input. Transcribe homophones accordingly, preferring words that match the context despite similar sounds.",
+        }
+        if messages and messages[-1].get("role") == "user":
+            messages.insert(len(messages) - 1, voice_hint)
+        else:
+            messages.append(voice_hint)
 
     # Auto-compact
     messages, context_length, was_compacted = await maybe_compact(
@@ -1074,6 +1096,16 @@ def run_post_response_tasks(
 
     if _extraction_jobs:
         asyncio.create_task(_run_extraction_jobs_sequentially(session_id, _extraction_jobs))
+
+    # Companion memory extraction — every message, not every 4th
+    if allow_background_extraction and not incognito and not compare_mode and owner:
+        message_stripped = message.strip()
+        if len(message_stripped) >= 15:
+            try:
+                from companion.routes import extract_companion_memory_from_chat
+                asyncio.create_task(extract_companion_memory_from_chat(owner, message_stripped, memory_manager))
+            except Exception as exc:
+                logger.debug("[companion-memory] extraction dispatch failed: %s", exc)
 
     # Token accumulation
     if last_metrics:

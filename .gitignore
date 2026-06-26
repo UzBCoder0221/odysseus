@@ -50,6 +50,7 @@ Thumbs.db
 *.cache
 cache/
 output.txt.txt
+*.spec
 
 # Media (uploaded/generated)
 *.jpg

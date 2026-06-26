@@ -1644,6 +1644,9 @@ export async function selectSession(id, { keepSidebar = false } = {}) {
         'OpenClaw');
     } else if (msgHistory.length) {
       for (const msg of msgHistory) {
+        // Skip system messages (goal primers, milestone snapshots, etc.)
+        // from the rendered UI — the AI still receives them server-side.
+        if (msg.role === 'system') continue;
         const meta = msg.metadata ? { ...msg.metadata, _fromHistory: true } : null;
         let displayContent;
         if (typeof msg.content === 'string') {

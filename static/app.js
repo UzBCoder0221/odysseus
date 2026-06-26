@@ -25,6 +25,7 @@ import galleryModule from './js/gallery.js';
 import tasksModule from './js/tasks.js';
 import calendarModule from './js/calendar.js';
 import notesModule from './js/notes.js';
+import goalsModule from './js/goals.js';
 import adminModule from './js/admin.js';
 import settingsModule from './js/settings.js';
 // Eagerly bind unified minimize/restore behavior across all tool modals.
@@ -45,6 +46,7 @@ import spinnerModule from './js/spinner.js';
 import { initKeyboardShortcuts } from './js/keyboard-shortcuts.js';
 import { initSidebarLayout, syncRailSide } from './js/sidebar-layout.js';
 import { initSectionCollapse, initSectionDrag } from './js/section-management.js';
+import companionModule from './js/companion.js';
 
 const API_BASE = window.location.origin;
 window.themeModule = themeModule;
@@ -872,6 +874,16 @@ function initializeEventListeners() {
       if (!Modals.toggle('gallery-modal')) {
         if (galleryModule.isGalleryOpen()) galleryModule.closeGallery();
         else galleryModule.openGallery();
+      }
+    });
+  }
+
+  // Goals tool button
+  const toolGoalsBtn = el('tool-goals-btn');
+  if (toolGoalsBtn) {
+    toolGoalsBtn.addEventListener('click', () => {
+      if (goalsModule) {
+        goalsModule.isGoalsOpen() ? goalsModule.closeGoals() : goalsModule.openGoals();
       }
     });
   }
@@ -3405,6 +3417,9 @@ function startOdysseusApp() {
   if (searchChatModule) {
     searchChatModule.init(API_BASE);
   }
+
+  // Initialize companion module
+  companionModule.init();
 
   // Search buttons — icon rail + sidebar
   const railSearchBtn = el('rail-search-btn');

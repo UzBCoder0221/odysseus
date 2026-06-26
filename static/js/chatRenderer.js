@@ -2422,6 +2422,10 @@ export function addMessage(role, content, modelName, metadata) {
       if (metadata?.memories_used?.length) wrap._memoriesUsed = metadata.memories_used;
       wrap.appendChild(createMsgFooter(wrap));
       if (metadata) displayMetrics(wrap, metadata);
+      // Add TTS button if available (handles non-streaming / history messages)
+      if (wrap.dataset.raw && window.aiTTSManager?.available && window.aiTTSManager?._provider !== 'disabled') {
+        addAITTSButton(wrap, wrap.dataset.raw);
+      }
     } else {
       // Add timestamp to user header (like AI messages)
       r.appendChild(roleTimestamp(metadata?.timestamp));

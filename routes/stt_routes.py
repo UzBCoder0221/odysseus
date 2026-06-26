@@ -1,21 +1,20 @@
 # routes/stt_routes.py
 """STT API routes — multi-provider (local Whisper, API endpoint, browser)."""
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
 import logging
 
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from src.upload_limits import read_upload_limited, STT_MAX_AUDIO_BYTES
+from src.settings import get_setting
 
 logger = logging.getLogger(__name__)
 
 
 def setup_stt_routes(stt_service):
-    """Setup STT routes with the provided STT service"""
     router = APIRouter(prefix="/api/stt", tags=["stt"])
 
     @router.get("/stats")
     async def get_stt_stats():
-        """Get STT service statistics"""
         try:
             return stt_service.get_stats()
         except Exception as e:
@@ -23,35 +22,43 @@ def setup_stt_routes(stt_service):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/transcribe")
-    async def transcribe_audio(file: UploadFile = File(...)):
-        """Transcribe uploaded audio file to text"""
+    async def transcribe_audio(
+        file: UploadFile = File(...),
+        provider: str = Form("local"),
+    ):
         try:
-            if not stt_service.available:
-                raise HTTPException(
-                    status_code=503,
-                    detail={"message": "STT service not available or set to browser mode"}
-                )
+            if provider == "browser":
+                return {"text": ""}
 
             audio_bytes = await read_upload_limited(file, STT_MAX_AUDIO_BYTES, "Audio file")
             if not audio_bytes:
-                raise HTTPException(status_code=400, detail={"message": "Empty audio file"})
+                return {"text": "", "error": "Empty audio file"}
 
-            text = stt_service.transcribe(audio_bytes)
+            if provider == "openai":
+                api_key = get_setting("openai_api_key", "")
+                if not api_key:
+                    return {"text": "", "error": "OpenAI API key not configured"}
+                import httpx
+                async with httpx.AsyncClient(timeout=120) as client:
+                    files = {"file": (file.filename or "audio.webm", audio_bytes, file.content_type or "audio/webm")}
+                    data = {"model": "whisper-1"}
+                    r = await client.post(
+                        "https://api.openai.com/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        files=files,
+                        data=data,
+                    )
+                    r.raise_for_status()
+                    result = r.json()
+                    return {"text": result.get("text", "")}
+
+            text = stt_service.transcribe(audio_bytes, file.content_type or "audio/webm")
             if text is None:
-                raise HTTPException(
-                    status_code=500,
-                    detail={"message": "Transcription failed"}
-                )
-
+                return {"text": "", "error": "Transcription failed"}
             return {"text": text}
 
-        except HTTPException:
-            raise
         except Exception as e:
             logger.error(f"Transcription error: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail={"message": f"Transcription failed: {str(e)}"}
-            )
+            return {"text": "", "error": str(e)}
 
     return router

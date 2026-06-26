@@ -451,6 +451,7 @@ class TaskScheduler:
         # old event scanner too caused duplicate emails/notifications for the
         # same calendar event.
         self._note_pings_task = asyncio.create_task(self._note_pings_loop())
+        self._research_scan_task = asyncio.create_task(self._research_scan_loop())
         logger.info(f"Task scheduler started (concurrency cap: {self._concurrency_cap})")
         # Audit clusters: show any minute-of-day where >1 active scheduled
         # tasks land. Helps spot "all my tasks fire at 9am" patterns the user
@@ -487,7 +488,7 @@ class TaskScheduler:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        for attr in ("_note_pings_task", "_event_pings_task"):
+        for attr in ("_note_pings_task", "_event_pings_task", "_research_scan_task"):
             t = getattr(self, attr, None)
             if t:
                 t.cancel()
@@ -534,6 +535,239 @@ class TaskScheduler:
                 except Exception as e:
                     logger.warning(f"ping_events background scanner errored for owner={ow!r}: {e}")
             await asyncio.sleep(600)  # 10 min
+
+    async def _research_scan_loop(self):
+        """Built-in goal-research scanner — ticks every 60s.
+
+        1. Finds all GoalResearchConfig rows where enabled=True.
+        2. For each, checks trigger_mode:
+           - "scheduled":   fires when current HH:MM matches scheduled_time.
+           - "idle":        fires when the owner has had no session activity
+                            for at least idle_threshold_minutes.
+           - "manual":      skipped (fired only via POST run-now API).
+        3. Delegates actual research to the module-level _perform_research
+           via threading.Thread(daemon=True) + .join(timeout) so that
+           bounded wall-clock is enforced.
+        4. Never writes to milestones or tasks — only creates pending
+           GoalResearchResult rows.
+        """
+        await asyncio.sleep(120)
+        while self._running:
+            try:
+                from core.database import SessionLocal, GoalResearchConfig, Goal, Session
+                from goals.routes import _perform_research
+                from datetime import datetime, timezone
+                db = SessionLocal()
+                configs = db.query(GoalResearchConfig).filter(
+                    GoalResearchConfig.enabled == True
+                ).all()
+                now_utc = datetime.now(timezone.utc)
+                for cfg in configs:
+                    # Skip if last_run_at was within the last 30 min (anti-flood)
+                    if cfg.last_run_at and (
+                        now_utc - cfg.last_run_at.replace(tzinfo=timezone.utc)
+                    ).total_seconds() < 1800:
+                        continue
+
+                    trigger = cfg.trigger_mode
+                    goal = db.query(Goal).filter(Goal.id == cfg.goal_id).first()
+                    if not goal:
+                        continue
+                    owner = goal.owner or ""
+
+                    should_fire = False
+
+                    if trigger == "scheduled" and cfg.scheduled_time:
+                        # Compare current HH:MM to scheduled_time
+                        now_str = now_utc.strftime("%H:%M")
+                        sched_str = cfg.scheduled_time
+                        if isinstance(sched_str, str) and sched_str.strip():
+                            should_fire = now_str == sched_str.strip()[:5]
+
+                    elif trigger == "idle" and cfg.idle_threshold_minutes:
+                        # Check if owner has had recent session activity
+                        threshold = (
+                            now_utc - timedelta(minutes=cfg.idle_threshold_minutes)
+                        )
+                        recent = db.query(Session).filter(
+                            Session.owner == owner,
+                            Session.last_accessed >= threshold,
+                        ).first()
+                        should_fire = recent is None
+
+                    if should_fire:
+                        logger.info(
+                            "Research trigger fire: goal=%s trigger=%s", cfg.goal_id, trigger
+                        )
+                        try:
+                            result = _perform_research(
+                                goal_id=cfg.goal_id,
+                                owner=owner,
+                                title=goal.title or "",
+                                description=goal.description or "",
+                                depth=cfg.depth or "moderate",
+                            )
+                            logger.info(
+                                "Research auto-run: goal=%s result=%s",
+                                cfg.goal_id, result.get("id", "?")
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "Research auto-run failed for goal=%s: %s",
+                                cfg.goal_id, e,
+                            )
+            finally:
+                db.close()
+            # Send email digests for pending research results
+            try:
+                await self._send_research_digests()
+            except Exception as e:
+                logger.warning(f"Research digest error: {e}")
+            await asyncio.sleep(60)  # 1 min
+
+    # ── In-memory tracking of last digest sent per owner (keyed by "owner:freq") ──
+    _research_digest_sent: dict = {}
+
+    async def _send_research_digests(self):
+        """Send email digests for pending research results that have
+        digest_frequency=daily or weekly set. Grouped by owner (one
+        consolidated email per owner). Respects the frequency — won't
+        send again until the window resets.
+
+        Uses the existing _send_smtp_message from routes/email_helpers.py
+        via the default EmailAccount per owner.
+        """
+        from core.database import SessionLocal, GoalResearchConfig, GoalResearchResult, Goal, EmailAccount
+        from routes.email_helpers import _send_smtp_message
+        from datetime import datetime, timezone, timedelta
+        import json as _json
+
+        db = SessionLocal()
+        try:
+            owners = set()
+            configs = db.query(GoalResearchConfig).filter(
+                GoalResearchConfig.enabled == True
+            ).all()
+            for cfg in configs:
+                goal = db.query(Goal).filter(Goal.id == cfg.goal_id).first()
+                if goal and goal.owner:
+                    owners.add(goal.owner)
+
+            now_utc = datetime.now(timezone.utc)
+            for owner in owners:
+                # Gather pending results across all goals for this owner
+                pending = db.query(GoalResearchResult).join(
+                    Goal, GoalResearchResult.goal_id == Goal.id
+                ).filter(
+                    Goal.owner == owner,
+                    GoalResearchResult.status == "pending",
+                ).all()
+
+                if not pending:
+                    continue
+
+                # Check if any goal config has digest_frequency set
+                owner_configs = db.query(GoalResearchConfig).join(
+                    Goal, GoalResearchConfig.goal_id == Goal.id
+                ).filter(
+                    Goal.owner == owner,
+                    GoalResearchConfig.enabled == True,
+                    GoalResearchConfig.digest_frequency.in_(["daily", "weekly"]),
+                ).all()
+
+                if not owner_configs:
+                    continue
+
+                # Determine the max frequency window (weekly > daily)
+                freqs = set(c.digest_frequency for c in owner_configs)
+                has_weekly = "weekly" in freqs
+                has_daily = "daily" in freqs
+
+                for freq in (["weekly"] if has_weekly else ["daily"]):
+                    cache_key = f"{owner}:{freq}"
+                    last_sent = self._research_digest_sent.get(cache_key)
+                    if last_sent:
+                        if freq == "daily" and (now_utc - last_sent).total_seconds() < 86400:
+                            continue
+                        if freq == "weekly" and (now_utc - last_sent).total_seconds() < 604800:
+                            continue
+
+                    # Send the digest
+                    email_accounts = db.query(EmailAccount).filter(
+                        EmailAccount.owner == owner
+                    ).all()
+                    if not email_accounts:
+                        logger.info("No EmailAccount for owner=%s, skipping digest", owner)
+                        continue
+                    acct = email_accounts[0]
+                    if not acct.smtp_host or not acct.smtp_username:
+                        logger.info("SMTP not configured for owner=%s, skipping digest", owner)
+                        continue
+
+                    # Build digest HTML
+                    digest_parts = [
+                        "<html><body style='font-family:sans-serif;max-width:600px;margin:0 auto;'>",
+                        "<h2>🔬 Research Digest</h2>",
+                        f"<p>You have <strong>{len(pending)}</strong> pending research result(s).</p>",
+                        "<hr>",
+                    ]
+                    for r in pending:
+                        goal_title = ""
+                        g = db.query(Goal).filter(Goal.id == r.goal_id).first()
+                        if g:
+                            goal_title = g.title
+                        preview = (r.summary or "")[:500]
+                        sources = ""
+                        if r.source_notes:
+                            try:
+                                urls = _json.loads(r.source_notes)
+                                sources = "<br>".join(f'<a href="{u}">{u}</a>' for u in urls[:5])
+                            except Exception:
+                                pass
+                        digest_parts.append(f"<div style='background:#f5f5f5;border-radius:8px;padding:12px;margin-bottom:12px;'>")
+                        digest_parts.append(f"<h3 style='margin:0 0 4px 0;'>{goal_title}</h3>")
+                        digest_parts.append(f"<p style='font-size:13px;'>{preview}...</p>")
+                        if sources:
+                            digest_parts.append(f"<p style='font-size:11px;'>Sources:<br>{sources}</p>")
+                        digest_parts.append("</div>")
+                    digest_parts.append(
+                        "<p style='font-size:11px;color:#888;'>"
+                        "Review and accept/discard each result in the Goals panel."
+                        "</p></body></html>"
+                    )
+                    html_body = "\n".join(digest_parts)
+
+                    cfg_dict = {
+                        "smtp_host": acct.smtp_host,
+                        "smtp_port": acct.smtp_port or 587,
+                        "smtp_user": acct.smtp_user,
+                        "smtp_password": acct.smtp_password or "",
+                        "from_address": acct.from_address or acct.smtp_user,
+                    }
+                    recipients = [acct.from_address] if acct.from_address else [acct.smtp_user]
+                    try:
+                        _send_smtp_message(
+                            cfg_dict,
+                            from_addr=cfg_dict["from_address"],
+                            recipients=recipients,
+                            message=(
+                                f"Subject: Research Digest ({freq})\n"
+                                f"Content-Type: text/html; charset=utf-8\n\n"
+                                f"{html_body}"
+                            ),
+                            timeout=30,
+                        )
+                        self._research_digest_sent[cache_key] = now_utc
+                        logger.info(
+                            "Research digest sent for owner=%s freq=%s results=%d",
+                            owner, freq, len(pending),
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to send research digest for owner=%s: %s", owner, e,
+                        )
+        finally:
+            db.close()
 
     def _known_task_owners(self) -> list:
         """Distinct non-empty owners that background scanners should visit.

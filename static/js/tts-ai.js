@@ -39,7 +39,10 @@ class AITTSManager {
                     this._provider = 'disabled';
                     return;
                 }
-            } catch {}
+                this.autoPlay = !!settings.tts_auto_play;
+            } catch {
+                this.autoPlay = false;
+            }
 
             const response = await fetch('/api/tts/stats');
             const stats = await response.json();
@@ -62,6 +65,26 @@ class AITTSManager {
         } catch (error) {
             console.error('Failed to check TTS availability:', error);
             this.available = false;
+        }
+
+        // Retroactively add TTS buttons to existing chat messages
+        if (this.available && this._provider !== 'disabled') {
+            this._attachButtonsToExisting();
+        }
+    }
+
+    _attachButtonsToExisting() {
+        var fn = function() {
+            document.querySelectorAll('.msg-ai').forEach(function(el) {
+                if (el.querySelector('.ai-tts-button')) return;
+                var raw = el.dataset.raw || (el.querySelector('.body') ? el.querySelector('.body').textContent : '');
+                if (raw) addAITTSButton(el, raw.trim());
+            });
+        };
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', fn);
+        } else {
+            fn();
         }
     }
 
